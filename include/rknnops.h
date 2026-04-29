@@ -1034,7 +1034,12 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int width_stride = conv2d_params.width_stride > 0 ? conv2d_params.width_stride : ((in_w + align_c - 1) / align_c) * align_c;
          int out_channel_field = align_out_c - 1;
          int orig_channel = conv_out_channels > 0 ? conv_out_channels - 1 : 0;
-         int out_width_stride = conv2d_params.out_width_stride > 0 ? conv2d_params.out_width_stride : ((out_w * align_out_c) / 4);
+         int out_atoms = out_w * out_h;
+         if (out_atoms < 1) out_atoms = 1;
+         int out_width_stride = conv2d_params.out_width_stride > 0 ? conv2d_params.out_width_stride : align_up_int(out_atoms, 4);
+         if (conv_kernel_h == 1 && conv_kernel_w == 1 && out_atoms < 4) {
+            out_width_stride = out_atoms;
+         }
          int data_in_channel_real = conv_in_channels > 0 ? conv_in_channels - 1 : 0;
          int data_in_channel_aligned = align_c;
          int dataout_width = out_w;
@@ -1047,19 +1052,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             conv_batch, conv_in_channels, in_h, in_w,
             conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
 
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 1 && conv_in_channels == 3 && conv_out_channels == 6) {
-           out_width_stride = 24;
-         }
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
-           out_width_stride = 16;
-         }
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 5 && conv_in_channels == 3 && conv_out_channels == 6) {
-           int stride_width = out_w > 1 ? (out_w - 1) : out_w;
-           out_width_stride = (stride_width * align_out_c) / 4;
-         }
-         if (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
-           out_width_stride = 16;
-         }
          int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2);
          if ((conv_in_channels >= 1 && conv_in_channels <= 4) && !(conv_groups == conv_in_channels && conv_out_channels == conv_in_channels)) {
             conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(7 + conv_in_channels);
@@ -1075,7 +1067,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
             width_stride = in_w;
             data_in_channel_aligned = 16;
-            out_width_stride = 256;
             weight_bytes_per_kernel = 288; 
             align_c = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
@@ -1094,12 +1085,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             data_in_channel_aligned = 8;
             weight_bytes_per_kernel = 144; 
             cv5_con5 = 0x0000ffff;
-            out_width_stride = 52;
          }
          else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
             conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
             cv5_con5 = 0x0000ffff;
-            out_width_stride = 16;
          }
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==1 && in_w==1 &&
             conv_out_channels==2 && weight_in_channels==2 && conv_kernel_h==1 && conv_kernel_w==1) {
@@ -1122,7 +1111,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             align_c = 16 ;
             cv5_con5 = 0;
-            out_width_stride = 12;
          }
          else if ( conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
             conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
@@ -1132,7 +1120,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             weight_kernels = 1;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             cv5_con5 = 0;
-            out_width_stride = 236;
             core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
             out_channel_field = 31;
          }
