@@ -133,6 +133,18 @@ static void set_max_params(int rows, int cols) {
    max_params.cols = cols;
 }
 
+typedef struct {
+   int rows;
+   int cols;
+} LutParams;
+
+static LutParams lut_params = {0};
+
+static void set_lut_params(int rows, int cols) {
+   lut_params.rows = rows;
+   lut_params.cols = cols;
+}
+
 static inline int align_up_int(int value, int align) {
    if (align <= 0) return value;
    return ((value + align - 1) / align) * align;
@@ -341,7 +353,12 @@ void push(DynamicArray *arr, uint64_t value) {
 
 #define ALU_ALGO_MAX_BIN 56
 #define ALU_ALGO_MIN_BIN 57
-static inline double clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+void freeArray(DynamicArray *arr) {
+   free(arr->data);
+   arr->data = NULL;
+   arr->size = 0;
+   arr->capacity = 0;
+}
 
 static uint32_t current_alu_algorithm = 2; // Default to Add (2)
 void set_alu_algorithm(uint32_t algo) {
@@ -349,7 +366,8 @@ void set_alu_algorithm(uint32_t algo) {
 }
 
 static void
-emit_raw(DynamicArray *arr, uint32_t target, uint32_t reg, uint64_t value)
+emit_raw(DynamicArray *arr, uint32_t target, uint32_t reg,
+         uint64_t value)
 {
    uint64_t packed_value = 0;
    packed_value = ((uint64_t)target) << 48;
@@ -374,17 +392,6 @@ emit(uint32_t reg, uint64_t value)
 
 #define EMIT(offset, value) emit(offset, value);
 
-typedef struct {
-   uint32_t reg;
-   uint64_t value;
-} RegOverride;
-
-static void emit_reg_overrides(const RegOverride *overrides, size_t count) {
-   for (size_t i = 0; i < count; ++i) {
-      EMIT(overrides[i].reg, overrides[i].value);
-   }
-}
-
 static void emit_lut_q015_tables(const uint16_t *lut) {
    EMIT(REG_DPU_LUT_ACCESS_CFG,
         DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
@@ -404,7 +411,21 @@ static void emit_lut_q015_tables(const uint16_t *lut) {
    }
 }
 
-static void emit_lut_q015_biased(uint64_t output_dma, uint64_t input_dma, uint32_t bn_mul_operand) {
+static void emit_lut_q015_biased(uint64_t output_dma, uint64_t input_dma,
+      uint32_t bn_mul_operand, size_t input_size_bytes) {
+   size_t packed_elems = input_size_bytes / 0x10;
+   if (packed_elems == 0) packed_elems = 1;
+   int rows = lut_params.rows > 0 ? lut_params.rows : 1;
+   int cols = lut_params.cols > 0 ? lut_params.cols : (int)packed_elems;
+   if ((size_t)rows * (size_t)cols < packed_elems) {
+      rows = (int)((packed_elems + (size_t)cols - 1) / (size_t)cols);
+   }
+   if (rows < 1) rows = 1;
+   if (cols < 1) cols = 1;
+   int data_cube_width = cols - 1;
+   int data_cube_height = rows - 1;
+   int stride_field = cols * 2;
+
    EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
    EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
    EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
@@ -412,14 +433,16 @@ static void emit_lut_q015_biased(uint64_t output_dma, uint64_t input_dma, uint32
    EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
    EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
    EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
-   EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
-   EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+   EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE((uint32_t)stride_field));
+   EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
+   EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
    EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
 
    EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
    EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
    EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
-   EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+   EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) |
+      DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
 
    EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
    EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
@@ -430,7 +453,7 @@ static void emit_lut_q015_biased(uint64_t output_dma, uint64_t input_dma, uint32
 
    EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
 
-   EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+   EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD((uint32_t)stride_field));
    emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
 
    EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
@@ -439,7 +462,8 @@ static void emit_lut_q015_biased(uint64_t output_dma, uint64_t input_dma, uint32
    EMIT(REG_DPU_LUT_LO_END, 0x00004000);
    EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
    EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
-   EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+   EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
+   EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_HEIGHT, DPU_RDMA_RDMA_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
    EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
    EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
    EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
@@ -448,320 +472,16 @@ static void emit_lut_q015_biased(uint64_t output_dma, uint64_t input_dma, uint32
    emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
 }
 
-static void emit_lut_q015_sigmoid(uint64_t output_dma, uint64_t input_dma, uint32_t bn_mul_operand) {
-   EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
-   EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
-   EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
-   EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
-   EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
-   EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
-   EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
-   EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
-   EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
-   EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
-
-   EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
-   EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
-   EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
-   EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
-
-   EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
-   EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
-   EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(bn_mul_operand));
-
-   EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
-   EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
-
-   EMIT(REG_DPU_OUT_CVT_OFFSET, 0x00000001);
-   EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
-   EMIT(REG_DPU_OUT_CVT_SHIFT, DPU_OUT_CVT_SHIFT_CVT_TYPE(1) | DPU_OUT_CVT_SHIFT_MINUS_EXP(15));
-
-   EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(16));
-   emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
-
-   EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
-   EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
-   EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
-   EMIT(REG_DPU_LUT_LO_END, 0x00004000);
-   EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
-   EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
-   EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
-   EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
-   EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
-   EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
-   EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
-   EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
-   emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
-}
-
-typedef double (*lut_map_fn)(double x, int side, void *ctx);
-typedef uint16_t (*lut_quant_u16_fn)(double y, void *ctx);
-typedef int16_t (*lut_quant_s16_fn)(double y, void *ctx);
-
-struct lut_scale_ctx {
-   double inv_scale;
-};
-
-static inline uint16_t lut_quant_q015_biased(double y, void *ctx) {
-   double inv_scale = 1.0;
-   if (ctx) {
-      inv_scale = ((const struct lut_scale_ctx *)ctx)->inv_scale;
-   }
-   long q = lround((y * inv_scale + 1.0) * 16384.0);
-   if (q < 0) q = 0;
-   if (q > 32767) q = 32767;
-   return (uint16_t)q;
-}
-
-static inline uint16_t lut_quant_q015_sigmoid(double y, void *ctx) {
-   (void)ctx;
-   long q = lround(y * 32768.0);
-   if (q < 0) q = 0;
-   if (q > 32767) q = 32767;
-   return (uint16_t)q;
-}
-
-static inline int16_t lut_quant_s16_scale(double y, void *ctx) {
-   double scale = 1.0;
-   if (ctx) {
-      scale = *(const double *)ctx;
-   }
-   long q = lround(y * scale);
-   if (q < -32768) q = -32768;
-   if (q > 32767) q = 32767;
-   return (int16_t)q;
-}
-
-static inline void init_lut_u16(uint16_t *lut, int *init, double index_scale,
-                                lut_map_fn map, void *ctx, lut_quant_u16_fn quant) {
-   if (*init) {
-      return;
-   }
-   const double step = 32.0 / index_scale;
-   for (int i = 0; i <= 512; ++i) {
-      double x = (double)(512 - i) * step;
-      double y = map(x, -1, ctx);
-      lut[i] = quant(y, ctx);
-   }
-   for (int i = 0; i <= 512; ++i) {
-      double x = (double)i * step;
-      double y = map(x, 1, ctx);
-      lut[513 + i] = quant(y, ctx);
-   }
-   *init = 1;
-}
-
-static inline void init_lut_s16(int16_t *lut, int *init, int entries, double index_scale,
-                                lut_map_fn map, void *ctx, lut_quant_s16_fn quant) {
-   if (*init) {
-      return;
-   }
-   const double step = 32.0 / index_scale;
-   for (int i = 0; i < entries; ++i) {
-      double x = (double)(entries - 1 - i) * step;
-      double y = map(x, -1, ctx);
-      lut[i] = quant(y, ctx);
-   }
-   for (int i = 0; i < entries; ++i) {
-      double x = (double)i * step;
-      double y = map(x, 1, ctx);
-      lut[entries + i] = quant(y, ctx);
-   }
-   *init = 1;
-}
-
-static inline double lut_map_sigmoid(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return 1.0 / (1.0 + exp(-xn));
-}
-
-static inline double lut_map_tanh(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return tanh(xn);
-}
-
-static inline double lut_map_sin(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return sin(xn);
-}
-
-static inline double lut_map_cos(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return cos(xn);
-}
-
-static inline double lut_map_asin(double x, int side, void *ctx) {
-   (void)ctx;
-   const double inv_half_pi = 0.6366197723675813;
-   double xn = (side < 0) ? -x : x;
-   return asin(xn) * inv_half_pi;
-}
-
-static inline double lut_map_acos(double x, int side, void *ctx) {
-   (void)ctx;
-   const double inv_pi = 0.3183098861837907;
-   double xn = (side < 0) ? -x : x;
-   return (2.0 * acos(xn) * inv_pi) - 1.0;
-}
-
-static inline double lut_map_atan(double x, int side, void *ctx) {
-   (void)ctx;
-   const double inv_half_pi = 0.6366197723675813;
-   double xn = (side < 0) ? -x : x;
-   return atan(xn) * inv_half_pi;
-}
-
-static inline double lut_map_asinh(double x, int side, void *ctx) {
-   (void)ctx;
-   const double inv_asinh_max = 0.2628363668683663;
-   double xn = (side < 0) ? -x : x;
-   return asinh(xn) * inv_asinh_max;
-}
-
-static inline double lut_map_acosh(double x, int side, void *ctx) {
-   (void)side;
-   (void)ctx;
-   const double inv_acosh_max = 0.24046329466947597;
-   double xn = x;
-   if (xn < 1.0) xn = 1.0;
-   return acosh(xn) * inv_acosh_max;
-}
-
-static inline double lut_map_atanh(double x, int side, void *ctx) {
-   (void)ctx;
-   const double inv_atanh_max = 0.2631439642242922;
-   double xn = x;
-   if (xn > 0.999) xn = 0.999;
-   double y = atanh(xn) * inv_atanh_max;
-   return (side < 0) ? -y : y;
-}
-
-static inline double lut_map_sinh(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return sinh(xn);
-}
-
-static inline double lut_map_cosh(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return cosh(xn);
-}
-
-static inline double lut_map_celu(double x, int side, void *ctx) {
-   (void)ctx;
-   const double alpha = 1.0;
-   double xn = (side < 0) ? -x : x;
-   return (xn > 0.0) ? xn : (alpha * (exp(xn / alpha) - 1.0));
-}
-
-static inline double lut_map_selu(double x, int side, void *ctx) {
-   (void)ctx;
-   const double alpha = 1.6732632423543772;
-   const double scale = 1.0507009873554805;
-   double xn = (side < 0) ? -x : x;
-   return (xn > 0.0) ? (scale * xn) : (scale * (alpha * (exp(xn) - 1.0)));
-}
-
-static inline double lut_map_swish(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return xn / (1.0 + exp(-xn));
-}
-
-static inline double lut_map_silu(double x, int side, void *ctx) {
-   return lut_map_swish(x, side, ctx);
-}
-
-static inline double lut_map_softsign(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return xn / (1.0 + fabs(xn));
-}
-
-static inline double lut_map_logsigmoid(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return -log1p(exp(-xn));
-}
-
-static inline double lut_map_hardsigmoid(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   double y = xn / 6.0 + 0.5;
-   return clamp(y, 0.0, 1.0);
-}
-
-static inline double lut_map_softplus(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return log1p(exp(xn));
-}
-
-static inline double lut_map_gelu(double x, int side, void *ctx) {
-   (void)ctx;
-   const double inv_sqrt2 = 0.7071067811865475;
-   double xn = (side < 0) ? -x : x;
-   return 0.5 * xn * (1.0 + erf(xn * inv_sqrt2));
-}
-
-static inline double lut_map_quick_gelu(double x, int side, void *ctx) {
-   (void)ctx;
-   const double k = 1.702;
-   double xn = (side < 0) ? -x : x;
-   return xn / (1.0 + exp(-k * xn));
-}
-
-static inline double lut_map_elu(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return (xn > 0.0) ? xn : (exp(xn) - 1.0);
-}
-
-static inline double lut_map_relu6(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   double y = xn;
-   return clamp(y, 0.0, 6.0);
-}
-
-static inline double lut_map_hardswish(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   double tmp = xn + 3.0;
-   tmp = clamp(tmp, 0.0, 6.0);
-   return xn * tmp / 6.0;
-}
-
-static inline double lut_map_mish(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return xn * tanh(log1p(exp(xn)));
-}
-
-static inline double lut_map_hardtanh(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   double y = xn;
-   return clamp(y, -1.0, 1.0);
-}
-
-static inline double lut_map_exp(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return exp(xn);
-}
-
-static inline double lut_map_exp2(double x, int side, void *ctx) {
-   (void)ctx;
-   double xn = (side < 0) ? -x : x;
-   return exp2(xn);
-}
-
+// static inline uint64_t EMIT(uint32_t reg, uint32_t value){
+//    uint32_t target = rkt_get_target(reg) + 0x1;
+ 
+//    uint64_t packed_value = 0;
+//    packed_value = ((uint64_t)target) << 48;
+//    packed_value |= ((uint64_t)value) << 16;
+//    packed_value |= (uint64_t)reg;
+ 
+//    return packed_value;
+// }
 static void reset_reg_tracking(void) {
    reg_task_count = 0;
    reg_tracking_enabled = true;
@@ -1066,6 +786,20 @@ static inline uint16_t swap_half16_bytes(uint16_t bits) {
    return (uint16_t)((bits << 8) | (bits >> 8));
 }
 
+static inline void store_be_half(__fp16 *base, size_t idx, __fp16 value) {
+   uint16_t bits = half16_to_bits(value);
+   bits = swap_half16_bytes(bits);
+   ((uint16_t *)base)[idx] = bits;
+}
+
+static inline __fp16 load_be_half(const __fp16 *base, size_t idx) {
+   uint16_t bits = ((const uint16_t *)base)[idx];
+   bits = swap_half16_bytes(bits);
+   return bits_to_half16(bits);
+}
+
+static const int kMatmul9x9Reorder[9] = {1, 0, 3, 2, 5, 4, 7, 6, 8};
+
 // Pack 9x9 matmul input with a 32-half stride per row (align_in), matching the
 // RKNN dump layout for 9x9 matmul.
 static void pack_matmul_input_9x9_fp16(__fp16 *dst, const __fp16 *src,
@@ -1343,20 +1077,15 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
       int rdma_src_base_addr_offset;    // REG_DPU_RDMA_RDMA_SRC_BASE_ADDR
       int rdma_ew_base_addr_offset;     // REG_DPU_RDMA_RDMA_EW_BASE_ADDR
       int rdma_surf_notch;              // REG_DPU_RDMA_RDMA_SURF_NOTCH
-     int rdma_ew_surf_notch;           // REG_DPU_RDMA_RDMA_EW_SURF_NOTCH
+      int rdma_ew_surf_notch;           // REG_DPU_RDMA_RDMA_EW_SURF_NOTCH
      } params[3] = {
       {0x0, 0, 0, 2, 0x0, 0x0, 0, 0},
       // width = (rdma_data_cube_width + 1) * 8
   };
-   const uint16_t *lut_table = NULL;
-   uint32_t lut_bn_mul_operand = 0x6d18;
-   int lut_use_sigmoid = 0;
    for (int i = 0; i < 1; ++i) {
       switch (current_alu_algorithm) {
          case 0: goto alu_case_minmax;
          case 1: goto alu_case_minmax;
-         case ALU_ALGO_MAX_BIN: goto alu_case_minmax_bin;
-         case ALU_ALGO_MIN_BIN: goto alu_case_minmax_bin;
          case 2: goto alu_case_add;
          case 3: goto alu_case_div;
          case 4: goto alu_case_minus;
@@ -1896,33 +1625,33 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int data_cube_height = rows - 1;
          int stride_field = cols * 2;
 
-         // EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
-         // EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
          EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
          EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
-         // EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE((uint32_t)stride_field));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE((uint32_t)stride_field));
          EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
-         // EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
+         EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
-         // EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
-         // EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
-         // EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
-         // EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) | DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) | DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
          EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
          EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(0) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_BYPASS(0) | DPU_EW_CFG_EW_BYPASS(0));
-         // EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
-         // EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
-         // EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD((uint32_t)stride_field));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD((uint32_t)stride_field));
          EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
-         // EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_HEIGHT, DPU_RDMA_RDMA_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_HEIGHT, DPU_RDMA_RDMA_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
          EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
          EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
-         // EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_MODE(1) | DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_SIZE(2));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_MODE(1) | DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_SIZE(2));
          EMIT(REG_DPU_RDMA_RDMA_EW_BASE_ADDR, DPU_RDMA_RDMA_EW_BASE_ADDR_EW_BASE_ADDR(weights_dma+0x4000));
-         // EMIT(REG_DPU_RDMA_RDMA_EW_SURF_STRIDE, DPU_RDMA_RDMA_EW_SURF_STRIDE_EW_SURF_STRIDE((uint32_t)stride_field));
+         EMIT(REG_DPU_RDMA_RDMA_EW_SURF_STRIDE, DPU_RDMA_RDMA_EW_SURF_STRIDE_EW_SURF_STRIDE((uint32_t)stride_field));
          EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
-         // EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12));
          goto alu_case_done;
       }
@@ -1931,13 +1660,96 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t sigmoid_lut[1026];
          static int sigmoid_lut_init = 0;
          if (!sigmoid_lut_init) {
-            init_lut_u16(sigmoid_lut, &sigmoid_lut_init, 2596.0, lut_map_sigmoid, NULL,
-                         lut_quant_q015_sigmoid);
+            const double index_scale = 2596.0;
+            const double step = 32.0 / index_scale;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = 1.0 / (1.0 + exp(x));
+               long q = lround(y * 32768.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sigmoid_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = 1.0 / (1.0 + exp(-x));
+               long q = lround(y * 32768.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sigmoid_lut[513 + i] = (uint16_t)q;
+            }
+            sigmoid_lut_init = 1;
          }
-         lut_table = sigmoid_lut;
-         lut_bn_mul_operand = 0x6912;
-         lut_use_sigmoid = 1;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA, DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sigmoid_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA, DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sigmoid_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+         
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+         
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6912));
+         
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_OFFSET, 0x00000001);
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+         EMIT(REG_DPU_OUT_CVT_SHIFT, DPU_OUT_CVT_SHIFT_CVT_TYPE(1) | DPU_OUT_CVT_SHIFT_MINUS_EXP(15));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(16));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         // hybrid_priority(1) 1: LO LUT
+         // OFLOW_PRIORITY(1)  1: LO LUT
+         // DPU_LUT_CFG_LUT_LO_LE_MUX(2). LO LUT and LE LUT mux.?
+
+         // LO_INDEX_SELECT(5)
+         // LE_INDEX_SELECT(5)
+         // LE start 0xffffc000  
+         // LE END 0x0
+         // LO START 0x0
+         // LO END 0x00004000
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_tanh:
       alu_case_tan: { // tanh
@@ -1945,117 +1757,775 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t tan_lut[1026];
          static int tan_lut_init = 0;
          if (!tan_lut_init) {
-            init_lut_u16(tan_lut, &tan_lut_init, 5216.0, lut_map_tanh, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = -tanh(x);
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               tan_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = tanh(x);
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               tan_lut[513 + i] = (uint16_t)q;
+            }
+            tan_lut_init = 1;
          }
-         lut_table = tan_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(tan_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(tan_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_sin: { // sin
          // Generate the sin LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t sin_lut[1026];
          static int sin_lut_init = 0;
          if (!sin_lut_init) {
-            init_lut_u16(sin_lut, &sin_lut_init, 5216.0, lut_map_sin, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = -sin(x);
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sin_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = sin(x);
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sin_lut[513 + i] = (uint16_t)q;
+            }
+            sin_lut_init = 1;
          }
-         lut_table = sin_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sin_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sin_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_cos: { // cos
          // Generate the cos LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t cos_lut[1026];
          static int cos_lut_init = 0;
          if (!cos_lut_init) {
-            init_lut_u16(cos_lut, &cos_lut_init, 5216.0, lut_map_cos, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = cos(x);
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               cos_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = cos(x);
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               cos_lut[513 + i] = (uint16_t)q;
+            }
+            cos_lut_init = 1;
          }
-         lut_table = cos_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(cos_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(cos_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_asin: { // asin
          // Generate the asin LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t asin_lut[1026];
          static int asin_lut_init = 0;
          if (!asin_lut_init) {
-            init_lut_u16(asin_lut, &asin_lut_init, 16384.0, lut_map_asin, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 16384.0;
+            const double step = 32.0 / index_scale;
+            const double inv_half_pi = 0.6366197723675813; // 2/pi to normalize into [-1, 1]
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = -asin(x) * inv_half_pi;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               asin_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = asin(x) * inv_half_pi;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               asin_lut[513 + i] = (uint16_t)q;
+            }
+            asin_lut_init = 1;
          }
-         lut_table = asin_lut;
-         lut_bn_mul_operand = 0x7400;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(asin_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(asin_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x7400));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_acos: { // acos
          // Generate the acos LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t acos_lut[1026];
          static int acos_lut_init = 0;
          if (!acos_lut_init) {
-            init_lut_u16(acos_lut, &acos_lut_init, 16384.0, lut_map_acos, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 16384.0;
+            const double step = 32.0 / index_scale;
+            const double inv_pi = 0.3183098861837907; // 1/pi to normalize into [-1, 1]
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = (2.0 * acos(-x) * inv_pi) - 1.0;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               acos_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = (2.0 * acos(x) * inv_pi) - 1.0;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               acos_lut[513 + i] = (uint16_t)q;
+            }
+            acos_lut_init = 1;
          }
-         lut_table = acos_lut;
-         lut_bn_mul_operand = 0x7400;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(acos_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(acos_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x7400));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_atan: { // atan
          // Generate the atan LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t atan_lut[1026];
          static int atan_lut_init = 0;
          if (!atan_lut_init) {
-            init_lut_u16(atan_lut, &atan_lut_init, 5216.0, lut_map_atan, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double inv_half_pi = 0.6366197723675813; // 2/pi to normalize into [-1, 1]
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = -atan(x) * inv_half_pi;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               atan_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = atan(x) * inv_half_pi;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               atan_lut[513 + i] = (uint16_t)q;
+            }
+            atan_lut_init = 1;
          }
-         lut_table = atan_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(atan_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(atan_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_asinh: { // asinh
          // Generate the asinh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t asinh_lut[1026];
          static int asinh_lut_init = 0;
          if (!asinh_lut_init) {
-            init_lut_u16(asinh_lut, &asinh_lut_init, 5216.0, lut_map_asinh, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double inv_asinh_max = 0.2628363668683663; // 1 / asinh(32)
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = -asinh(x) * inv_asinh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               asinh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = asinh(x) * inv_asinh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               asinh_lut[513 + i] = (uint16_t)q;
+            }
+            asinh_lut_init = 1;
          }
-         lut_table = asinh_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(asinh_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(asinh_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_acosh: { // acosh
          // Generate the acosh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t acosh_lut[1026];
          static int acosh_lut_init = 0;
          if (!acosh_lut_init) {
-            init_lut_u16(acosh_lut, &acosh_lut_init, 5216.0, lut_map_acosh, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double inv_acosh_max = 0.24046329466947597; // 1 / acosh(32)
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               if (x < 1.0) x = 1.0;
+               double y = acosh(x) * inv_acosh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               acosh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               if (x < 1.0) x = 1.0;
+               double y = acosh(x) * inv_acosh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               acosh_lut[513 + i] = (uint16_t)q;
+            }
+            acosh_lut_init = 1;
          }
-         lut_table = acosh_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(acosh_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(acosh_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_atanh: { // atanh
          // Generate the atanh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
          static uint16_t atanh_lut[1026];
          static int atanh_lut_init = 0;
          if (!atanh_lut_init) {
-            init_lut_u16(atanh_lut, &atanh_lut_init, 16384.0, lut_map_atanh, NULL,
-                         lut_quant_q015_biased);
+            const double index_scale = 16384.0;
+            const double step = 32.0 / index_scale;
+            const double inv_atanh_max = 0.2631439642242922; // 1 / atanh(0.999)
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               if (x > 0.999) x = 0.999;
+               double y = -atanh(x) * inv_atanh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               atanh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               if (x > 0.999) x = 0.999;
+               double y = atanh(x) * inv_atanh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               atanh_lut[513 + i] = (uint16_t)q;
+            }
+            atanh_lut_init = 1;
          }
-         lut_table = atanh_lut;
-         lut_bn_mul_operand = 0x7400;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(atanh_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(atanh_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x7400));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_sinh: { // sinh
          // Generate the sinh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
@@ -2066,14 +2536,83 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double step = 32.0 / index_scale;
             const double max_x = 512.0 * step;
             const double inv_sinh_max = 1.0 / sinh(max_x);
-            struct lut_scale_ctx scale = { .inv_scale = inv_sinh_max };
-            init_lut_u16(sinh_lut, &sinh_lut_init, index_scale, lut_map_sinh, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = -sinh(x) * inv_sinh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sinh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = sinh(x) * inv_sinh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sinh_lut[513 + i] = (uint16_t)q;
+            }
+            sinh_lut_init = 1;
          }
-         lut_table = sinh_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sinh_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sinh_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
       }
       alu_case_cosh: { // cosh
          // Generate the cosh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
@@ -2084,25 +2623,82 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double step = 32.0 / index_scale;
             const double max_x = 512.0 * step;
             const double inv_cosh_max = 1.0 / cosh(max_x);
-            struct lut_scale_ctx scale = { .inv_scale = inv_cosh_max };
-            init_lut_u16(cosh_lut, &cosh_lut_init, index_scale, lut_map_cosh, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = cosh(x) * inv_cosh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               cosh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = cosh(x) * inv_cosh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               cosh_lut[513 + i] = (uint16_t)q;
+            }
+            cosh_lut_init = 1;
          }
-         lut_table = cosh_lut;
-         lut_bn_mul_operand = 0x6d18;
-         lut_use_sigmoid = 0;
-         goto alu_case_lut_default;
-      }
-      alu_case_lut_default: {
-         if (!lut_table) {
-            goto alu_case_default;
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(cosh_lut[i]));
          }
-         emit_lut_q015_tables(lut_table);
-         if (lut_use_sigmoid) {
-            emit_lut_q015_sigmoid(output_dma, input_dma, lut_bn_mul_operand);
-         } else {
-            emit_lut_q015_biased(output_dma, input_dma, lut_bn_mul_operand);
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(cosh_lut[513 + i]));
          }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
          goto alu_case_done;
       }
       alu_case_celu: { // celu
@@ -2118,12 +2714,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = alpha * (exp(-max_x / alpha) - 1.0);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(celu_lut, &celu_lut_init, index_scale, lut_map_celu, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = (xn > 0.0) ? xn : (alpha * (exp(xn / alpha) - 1.0));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               celu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = (x > 0.0) ? x : (alpha * (exp(x / alpha) - 1.0));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               celu_lut[513 + i] = (uint16_t)q;
+            }
+            celu_lut_init = 1;
          }
          emit_lut_q015_tables(celu_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_selu: { // selu
@@ -2140,12 +2751,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = scale * (alpha * (exp(-max_x) - 1.0));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale_ctx = { .inv_scale = inv_scale };
-            init_lut_u16(selu_lut, &selu_lut_init, index_scale, lut_map_selu, &scale_ctx,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = (xn > 0.0) ? (scale * xn) : (scale * (alpha * (exp(xn) - 1.0)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               selu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = (x > 0.0) ? (scale * x) : (scale * (alpha * (exp(x) - 1.0)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               selu_lut[513 + i] = (uint16_t)q;
+            }
+            selu_lut_init = 1;
          }
          emit_lut_q015_tables(selu_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_swish: { // swish
@@ -2160,12 +2786,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x / (1.0 + exp(max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(swish_lut, &swish_lut_init, index_scale, lut_map_swish, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / (1.0 + exp(-xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               swish_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / (1.0 + exp(-x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               swish_lut[513 + i] = (uint16_t)q;
+            }
+            swish_lut_init = 1;
          }
          emit_lut_q015_tables(swish_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_softsign: { // softsign
@@ -2180,12 +2821,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x / (1.0 + max_x);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(softsign_lut, &softsign_lut_init, index_scale, lut_map_softsign,
-                         &scale, lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / (1.0 + fabs(xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softsign_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / (1.0 + fabs(x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softsign_lut[513 + i] = (uint16_t)q;
+            }
+            softsign_lut_init = 1;
          }
          emit_lut_q015_tables(softsign_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_logsigmoid: { // logsigmoid
@@ -2200,12 +2856,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -log1p(exp(max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(logsigmoid_lut, &logsigmoid_lut_init, index_scale,
-                         lut_map_logsigmoid, &scale, lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = -log1p(exp(-xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               logsigmoid_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = -log1p(exp(-x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               logsigmoid_lut[513 + i] = (uint16_t)q;
+            }
+            logsigmoid_lut_init = 1;
          }
          emit_lut_q015_tables(logsigmoid_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_hardsigmoid: { // hardsigmoid
@@ -2220,12 +2891,31 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = fmin(1.0, fmax(0.0, -max_x / 6.0 + 0.5));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(hardsigmoid_lut, &hardsigmoid_lut_init, index_scale,
-                         lut_map_hardsigmoid, &scale, lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / 6.0 + 0.5;
+               if (y < 0.0) y = 0.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardsigmoid_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / 6.0 + 0.5;
+               if (y < 0.0) y = 0.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardsigmoid_lut[513 + i] = (uint16_t)q;
+            }
+            hardsigmoid_lut_init = 1;
          }
          emit_lut_q015_tables(hardsigmoid_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_softplus: { // softplus
@@ -2240,12 +2930,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = log1p(exp(-max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(softplus_lut, &softplus_lut_init, index_scale,
-                         lut_map_softplus, &scale, lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = log1p(exp(xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softplus_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = log1p(exp(x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softplus_lut[513 + i] = (uint16_t)q;
+            }
+            softplus_lut_init = 1;
          }
          emit_lut_q015_tables(softplus_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_gelu: { // gelu
@@ -2261,12 +2966,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = 0.5 * (-max_x) * (1.0 + erf(-max_x * inv_sqrt2));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(gelu_lut, &gelu_lut_init, index_scale, lut_map_gelu, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = 0.5 * xn * (1.0 + erf(xn * inv_sqrt2));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               gelu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = 0.5 * x * (1.0 + erf(x * inv_sqrt2));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               gelu_lut[513 + i] = (uint16_t)q;
+            }
+            gelu_lut_init = 1;
          }
          emit_lut_q015_tables(gelu_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_quick_gelu: { // quick_gelu
@@ -2282,12 +3002,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x / (1.0 + exp(k * max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(quick_gelu_lut, &quick_gelu_lut_init, index_scale,
-                         lut_map_quick_gelu, &scale, lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / (1.0 + exp(-k * xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               quick_gelu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / (1.0 + exp(-k * x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               quick_gelu_lut[513 + i] = (uint16_t)q;
+            }
+            quick_gelu_lut_init = 1;
          }
          emit_lut_q015_tables(quick_gelu_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_elu: { // elu
@@ -2302,12 +3037,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = exp(-max_x) - 1.0;
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(elu_lut, &elu_lut_init, index_scale, lut_map_elu, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = (xn > 0.0) ? xn : (exp(xn) - 1.0);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               elu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = (x > 0.0) ? x : (exp(x) - 1.0);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               elu_lut[513 + i] = (uint16_t)q;
+            }
+            elu_lut_init = 1;
          }
          emit_lut_q015_tables(elu_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_relu6: { // relu6
@@ -2322,12 +3072,31 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = fmin(6.0, fmax(0.0, -max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(relu6_lut, &relu6_lut_init, index_scale, lut_map_relu6, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn;
+               if (y < 0.0) y = 0.0;
+               if (y > 6.0) y = 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               relu6_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x;
+               if (y < 0.0) y = 0.0;
+               if (y > 6.0) y = 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               relu6_lut[513 + i] = (uint16_t)q;
+            }
+            relu6_lut_init = 1;
          }
          emit_lut_q015_tables(relu6_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_hardswish: { // hardswish
@@ -2342,12 +3111,33 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x * fmin(fmax(-max_x + 3.0, 0.0), 6.0) / 6.0;
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(hardswish_lut, &hardswish_lut_init, index_scale,
-                         lut_map_hardswish, &scale, lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double tmp = xn + 3.0;
+               if (tmp < 0.0) tmp = 0.0;
+               if (tmp > 6.0) tmp = 6.0;
+               double y = xn * tmp / 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardswish_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double tmp = x + 3.0;
+               if (tmp < 0.0) tmp = 0.0;
+               if (tmp > 6.0) tmp = 6.0;
+               double y = x * tmp / 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardswish_lut[513 + i] = (uint16_t)q;
+            }
+            hardswish_lut_init = 1;
          }
          emit_lut_q015_tables(hardswish_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_mish: { // mish
@@ -2362,12 +3152,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x * tanh(log1p(exp(-max_x)));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(mish_lut, &mish_lut_init, index_scale, lut_map_mish, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn * tanh(log1p(exp(xn)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               mish_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x * tanh(log1p(exp(x)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               mish_lut[513 + i] = (uint16_t)q;
+            }
+            mish_lut_init = 1;
          }
          emit_lut_q015_tables(mish_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_hardtanh: { // hardtanh
@@ -2382,12 +3187,31 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = fmin(1.0, fmax(-1.0, -max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(hardtanh_lut, &hardtanh_lut_init, index_scale,
-                         lut_map_hardtanh, &scale, lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn;
+               if (y < -1.0) y = -1.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardtanh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x;
+               if (y < -1.0) y = -1.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardtanh_lut[513 + i] = (uint16_t)q;
+            }
+            hardtanh_lut_init = 1;
          }
          emit_lut_q015_tables(hardtanh_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_exp: { // exp
@@ -2402,12 +3226,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = exp(-max_x);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(exp_lut, &exp_lut_init, index_scale, lut_map_exp, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = exp(xn);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = exp(x);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp_lut[513 + i] = (uint16_t)q;
+            }
+            exp_lut_init = 1;
          }
          emit_lut_q015_tables(exp_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_exp2: { // exp2
@@ -2422,12 +3261,27 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = exp2(-max_x);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
-            init_lut_u16(exp2_lut, &exp2_lut_init, index_scale, lut_map_exp2, &scale,
-                         lut_quant_q015_biased);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = exp2(xn);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp2_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = exp2(x);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp2_lut[513 + i] = (uint16_t)q;
+            }
+            exp2_lut_init = 1;
          }
          emit_lut_q015_tables(exp2_lut);
-         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18, input_size_bytes);
          goto alu_case_done;
       }
       alu_case_silu: { // silu
@@ -2437,9 +3291,25 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static int silu_lut_init = 0;
          if (!silu_lut_init) {
             const double index_scale = 2824.0;
+            const double step = 32.0 / index_scale;
             const double output_scale = 5664.8;
-            init_lut_s16(silu_lut, &silu_lut_init, lut_entries, index_scale,
-                         lut_map_silu, (void *)&output_scale, lut_quant_s16_scale);
+            for (int i = 0; i < lut_entries; ++i) {
+               double x = (double)(lut_entries - 1 - i) * step;
+               double y = -x / (1.0 + exp(x));
+               long q = lround(y * output_scale);
+               if (q < -32768) q = -32768;
+               if (q > 32767) q = 32767;
+               silu_lut[i] = (int16_t)q;
+            }
+            for (int i = 0; i < lut_entries; ++i) {
+               double x = (double)i * step;
+               double y = x / (1.0 + exp(-x));
+               long q = lround(y * output_scale);
+               if (q < -32768) q = -32768;
+               if (q > 32767) q = 32767;
+               silu_lut[lut_entries + i] = (int16_t)q;
+            }
+            silu_lut_init = 1;
          }
          EMIT(REG_DPU_LUT_ACCESS_CFG,
               DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
@@ -2559,8 +3429,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int data_cube_height = rows - 1;
          int stride_field = cols * 4;
 
-         // EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
-         // EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
          EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
          EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
@@ -2568,11 +3438,11 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
          EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
-         // EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
-         // EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
          EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
          EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) | DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
-         // EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
          EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_ALU_ALGO(3) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1));
          EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
          EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
@@ -2583,9 +3453,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(weights_dma+0x4000));
          EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_MODE(1) | DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_SIZE(2));
          EMIT(REG_DPU_RDMA_RDMA_EW_BASE_ADDR, DPU_RDMA_RDMA_EW_BASE_ADDR_EW_BASE_ADDR(input_dma));
-         // EMIT(REG_DPU_RDMA_RDMA_EW_SURF_STRIDE, DPU_RDMA_RDMA_EW_SURF_STRIDE_EW_SURF_STRIDE((uint32_t)stride_field));
-         // EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
-         // EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         EMIT(REG_DPU_RDMA_RDMA_EW_SURF_STRIDE, DPU_RDMA_RDMA_EW_SURF_STRIDE_EW_SURF_STRIDE((uint32_t)stride_field));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
          goto alu_case_done;
       }
@@ -2647,54 +3517,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int data_cube_height = rows - 1;
          int stride_field = cols * 2;
 
-         // EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
-         // EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
-         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
-         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
-         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
-         // EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE((uint32_t)stride_field));
-         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
-         EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
-         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
-         // EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
-         // EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
-         // EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
-         // EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) | DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
-         // EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
-         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_EQUAL_EN(1) |
-            DPU_EW_CFG_EW_ALU_ALGO(current_alu_algorithm) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1));
-         // EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
-         // EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
-         // EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD((uint32_t)stride_field));
-         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
-         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_HEIGHT, DPU_RDMA_RDMA_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
-         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
-         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
-         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_MODE(1) | DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_SIZE(2));
-         EMIT(REG_DPU_RDMA_RDMA_EW_BASE_ADDR, DPU_RDMA_RDMA_EW_BASE_ADDR_EW_BASE_ADDR(weights_dma+0x4000));
-         // EMIT(REG_DPU_RDMA_RDMA_EW_SURF_STRIDE, DPU_RDMA_RDMA_EW_SURF_STRIDE_EW_SURF_STRIDE((uint32_t)stride_field));
-         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) |
-            DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
-         // EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
-         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12));
-         goto alu_case_done;
-      }
-      alu_case_minmax_bin: { // max/min binary
-         size_t packed_elems = input_size_bytes / 0x10;
-         if (packed_elems == 0) packed_elems = 1;
-         int rows = max_params.rows > 0 ? max_params.rows : 1;
-         int cols = max_params.cols > 0 ? max_params.cols : (int)packed_elems;
-         if (rows * (size_t)cols < packed_elems) {
-            rows = (int)((packed_elems + (size_t)cols - 1) / (size_t)cols);
-         }
-         if (rows < 1) rows = 1;
-         if (cols < 1) cols = 1;
-         int data_cube_width = cols - 1;
-         int data_cube_height = rows - 1;
-         int stride_field = cols * 2;
-         uint32_t minmax_algo = (current_alu_algorithm == ALU_ALGO_MIN_BIN) ? 1u : 0u;
-         uint32_t minmax_ctl = 1u | (minmax_algo << 1);
-
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
@@ -2702,9 +3524,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
          EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE((uint32_t)stride_field));
          EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
-         EMIT(REG_DPU_DATA_CUBE_HEIGHT,
-            DPU_DATA_CUBE_HEIGHT_MINMAX_CTL(minmax_ctl) |
-            DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
+         EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
          EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
          EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
@@ -2712,8 +3532,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) | DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
          EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
          EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_EQUAL_EN(1) |
-            DPU_EW_CFG_EW_BINARY_EN(1) | DPU_EW_CFG_EW_ALU_ALGO(minmax_algo) | DPU_EW_CFG_EW_RELU_BYPASS(1) |
-            DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1));
+            DPU_EW_CFG_EW_ALU_ALGO(current_alu_algorithm) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1));
          EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
          EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
          EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD((uint32_t)stride_field));
@@ -3089,32 +3908,61 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int data_cube_height = rows - 1;
          int stride_field = cols * 2;
 
-         // EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
-         // EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_POINTER_PP_MODE(1) | DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_EN(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
          EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
          EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
-         // EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE((uint32_t)stride_field));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE((uint32_t)stride_field));
          EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
          EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
-         // EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
-         // EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) | DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
-         // EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
-         // EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
-         // EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
+         
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA((uint32_t)data_cube_height) | DPU_WDMA_SIZE_1_WIDTH_WDMA((uint32_t)data_cube_width));
+         
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+
+         // EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(0) | DPU_BS_CFG_BS_RELUX_EN(1) | DPU_BS_CFG_BS_MUL_BYPASS(0) | DPU_BS_CFG_BS_ALU_BYPASS(0) | DPU_BS_CFG_BS_ALU_ALGO(4) | DPU_BS_CFG_BS_BYPASS(0));
+         // 0x33800000 = smallest fp16 in fp32
+         // 0x3B03126F = dec 0.002 smallest step in fp16 (maybe wrong)
+         // 0x41200000 = dec 10 = added 10 
+         // 0x7F800000 = dec inf = added inf 
+         // EMIT(REG_DPU_BS_ALU_CFG, DPU_BS_ALU_CFG_BS_ALU_OPERAND(0x3F800000));
+         // 0x7c00=+inf 0xfc00=-inf 0x3C00=1. 0x63D0=1000
+         // EMIT(REG_DPU_BS_MUL_CFG, DPU_BS_MUL_CFG_BS_MUL_OPERAND(0xBC00));
+         // 0x3F800000 = dec 1 = relux 1
+         // 0x7F800000 = inf = relux inf
+         // EMIT(REG_DPU_BS_RELUX_CMP_VALUE, DPU_BS_RELUX_CMP_VALUE_BS_RELUX_CMP_DAT(0x3F800000));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
+         // EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(0) | DPU_BN_CFG_BN_BYPASS(0));
+         // EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x7c00));
+         // EMIT(REG_DPU_BN_ALU_CFG, DPU_BN_ALU_CFG_BN_ALU_OPERAND(0x0));
+
+         // EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(0) | DPU_BS_CFG_BS_RELUX_EN(0) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(0));
+         // EMIT(REG_DPU_BN_RELUX_CMP_VALUE, DPU_BN_RELUX_CMP_VALUE_BN_RELUX_CMP_DAT(0x3F800000));
+
+         // EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_BYPASS(1) | DPU_EW_CFG_EW_BYPASS(1));
          EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1) | DPU_EW_CFG_EW_OP_TYPE(1));
-         // EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
-         // EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD((uint32_t)stride_field));
+         // EMIT(REG_DPU_EW_RELUX_CMP_VALUE, DPU_EW_RELUX_CMP_VALUE_EW_RELUX_CMP_DAT(0x3F800000));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         // EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(0));
+         // EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+         // EMIT(REG_DPU_OUT_CVT_SHIFT, DPU_OUT_CVT_SHIFT_MINUS_EXP(16));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD((uint32_t)stride_field));
          EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH((uint32_t)data_cube_width));
          EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_HEIGHT, DPU_RDMA_RDMA_DATA_CUBE_HEIGHT_HEIGHT((uint32_t)data_cube_height));
          EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
          EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
          EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_MODE(1) | DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DATA_SIZE(2));
          EMIT(REG_DPU_RDMA_RDMA_EW_BASE_ADDR, DPU_RDMA_RDMA_EW_BASE_ADDR_EW_BASE_ADDR(weights_dma+0x4000));
-         // EMIT(REG_DPU_RDMA_RDMA_EW_SURF_STRIDE, DPU_RDMA_RDMA_EW_SURF_STRIDE_EW_SURF_STRIDE((uint32_t)stride_field));
+         EMIT(REG_DPU_RDMA_RDMA_EW_SURF_STRIDE, DPU_RDMA_RDMA_EW_SURF_STRIDE_EW_SURF_STRIDE((uint32_t)stride_field));
          EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
-         // EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12));
          goto alu_case_done;
       }
@@ -3424,38 +4272,21 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_RDMA_RDMA_EW_SURF_NOTCH, DPU_RDMA_RDMA_EW_SURF_NOTCH_EW_SURF_NOTCH(params[i].rdma_ew_surf_notch));
          // EMIT(REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12));
          
-         RegOverride overrides[2];
-         size_t override_count = 0;
-
          // MIN MAX
-         if (current_alu_algorithm == 0 || current_alu_algorithm == 1) {
+         if (current_alu_algorithm == 0 || current_alu_algorithm == 1){
             // EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(params[i].data_cube_width));
             // EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_MINMAX_CTL(1) | DPU_DATA_CUBE_HEIGHT_HEIGHT(0));
-            overrides[override_count++] =
-               (RegOverride){REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(0)};
-            overrides[override_count++] =
-               (RegOverride){REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) |
-                  DPU_EW_CFG_EW_EQUAL_EN(1) | DPU_EW_CFG_EW_ALU_ALGO(current_alu_algorithm) |
-                  DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1)};
-            // overrides[override_count++] =
-            //    (RegOverride){REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) |
-            //       DPU_EW_CFG_EW_BINARY_EN(1) | DPU_EW_CFG_EW_ALU_ALGO(current_alu_algorithm) |
-            //       DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1)};
+            EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(0));
+   
+            EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_EQUAL_EN(1) | DPU_EW_CFG_EW_ALU_ALGO(current_alu_algorithm) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1));
+            // EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_BINARY_EN(1) | DPU_EW_CFG_EW_ALU_ALGO(current_alu_algorithm) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1));
          }
-
+   
          // MUL
-         if (current_alu_algorithm == 9) {
-            // overrides[override_count++] =
-            //    (RegOverride){REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) |
-            //       DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(0) |
-            //       DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1) | DPU_EW_CFG_EW_OP_TYPE(1)};
-            overrides[override_count++] =
-               (RegOverride){REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) |
-                  DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1) |
-                  DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1) | DPU_EW_CFG_EW_OP_TYPE(1)};
+         if (current_alu_algorithm == 9){
+            // EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(0) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1) | DPU_EW_CFG_EW_OP_TYPE(1))
+            EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_DATA_MODE(1) | DPU_EW_CFG_EDATA_SIZE(2) | DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_SRC(1) | DPU_EW_CFG_EW_OP_TYPE(1));
          }
-
-         emit_reg_overrides(overrides, override_count);
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
          EMIT(REG_PC_VERSION, 0x00020000);
          goto alu_case_done;
@@ -3639,8 +4470,6 @@ struct MemHandles createRegCmd(int fd, size_t input_size, size_t weights_size, s
    return handles;
 }
 
-void breakpoint();
-
 int submitTask(int fd, uint64_t tasks_obj, size_t task_count){
    if (task_count == 0) task_count = 1;
    uint32_t submit_flags = RKNPU_JOB_PC | RKNPU_JOB_BLOCK;
@@ -3650,7 +4479,7 @@ int submitTask(int fd, uint64_t tasks_obj, size_t task_count){
    printf("submitTask flags %u\n", submit_flags);
    struct rknpu_submit submit = {
       .flags = submit_flags,
-      .timeout = 1000,
+      .timeout = 10000,
       .task_start = 0,
       .task_number = (uint32_t)task_count,
       .task_counter = 0,
@@ -3670,7 +4499,6 @@ int submitTask(int fd, uint64_t tasks_obj, size_t task_count){
    };
    printf("DRM_IOCTL_RKNPU_SUBMIT\n");
    int ret = ioctl(fd, DRM_IOCTL_RKNPU_SUBMIT, &submit);
-   breakpoint();
    if (ret < 0) {
       perror("DRM_IOCTL_RKNPU_SUBMIT");
    }
@@ -3877,7 +4705,7 @@ __fp16* float16_conv2d(__fp16* input, __fp16* kernel, uint32_t alu_algorithm, in
 
    mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
    mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
-   // Tasks are kernel-mapped/non-IOMMU; MEM_SYNC can return EINVAL here.
+   mem_sync(fd, handles.tasks_obj, 0, handles.tasks_size, RKNPU_MEM_SYNC_TO_DEVICE);
    mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_TO_DEVICE);
    printf("task_count %zu\n", handles.task_count);
    int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
@@ -4019,6 +4847,7 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
    __fp16 *weights_fp16 = (__fp16*)((char*)handles.weights + REGCMD_RESERVED);
    __fp16 *feature_data_fp16 = (__fp16*)(handles.input);
    __fp16 *output_data = (__fp16*)(handles.output);
+   // float* output_data_float = (float*)(handles.output);
 
    memset(weights_fp16, 0, packed_weight_bytes);
    memset(feature_data_fp16, 0, packed_input_bytes);
@@ -4040,7 +4869,7 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
 
    mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
    mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
-   // Tasks are kernel-mapped/non-IOMMU; MEM_SYNC can return EINVAL here.
+   mem_sync(fd, handles.tasks_obj, 0, handles.tasks_size, RKNPU_MEM_SYNC_TO_DEVICE);
    mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_TO_DEVICE);
    int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
    if(ret < 0) {
@@ -4051,8 +4880,14 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
    }
    mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_FROM_DEVICE);
 
+   // __fp16 *output_data_fp16 = (__fp16*)(handles.output);
+   // printf("\nMethod 1 - Correct fp16 casting: fp16=%f fp32=%f\n", 
+         //  output_data_fp16[0], (float)output_data_fp16[0]);
+
+   // Print the first element using the correct fp16 interpretation.
    __fp16* output_fp16 = (__fp16*)(handles.output);
-   printf("\nMethod 2 - float casting: fp16=%f fp32=%f\n", output_fp16[0], (float)output_fp16[0]);
+   printf("\nMethod 2 - float casting: fp16=%f fp32=%f\n", 
+          output_fp16[0], (float)output_fp16[0]);
 
    output_copy = (__fp16*)malloc(packed_output_bytes);
    if (!output_copy) {
@@ -4062,6 +4897,95 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
       return NULL;
    }
    memcpy(output_copy, output_data, packed_output_bytes);
+   release_memhandles(fd, &handles);
+   close(fd);
+   return output_copy;
+}
+
+int16_t* int16_alu_op(int16_t* a, int16_t* b, uint32_t alu_algorithm)
+{
+   int fd = getDeviceFd();
+   npu_reset(fd);
+   rknn_tensor_type dtype = RKNN_TENSOR_INT16;
+
+   size_t bytes = get_type_size(dtype);
+   struct MemHandles handles = createRegCmd(fd, bytes, bytes, bytes, alu_algorithm);
+   int16_t *output_copy = NULL;
+   if (!handles.input || !handles.weights || !handles.output || !handles.tasks) {
+      release_memhandles(fd, &handles);
+      close(fd);
+      return NULL;
+   }
+   int16_t *weights_int16 = (int16_t*)((char*)handles.weights + REGCMD_RESERVED);
+   int16_t *feature_data_int16 = (int16_t*)(handles.input);
+   int16_t *output_data = (int16_t*)(handles.output);
+
+   memcpy(weights_int16, a, bytes);
+   memcpy(feature_data_int16, b, bytes);
+
+   mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
+   if(ret < 0) {
+         printf("RKNPU_SUBMIT failed %d\n",ret);
+         release_memhandles(fd, &handles);
+         close(fd);
+         return NULL;
+   }
+   mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_FROM_DEVICE);
+   output_copy = (int16_t*)malloc(bytes);
+   if (!output_copy) {
+      printf("failed to allocate int16 output copy\n");
+      release_memhandles(fd, &handles);
+      close(fd);
+      return NULL;
+   }
+   memcpy(output_copy, output_data, bytes);
+   release_memhandles(fd, &handles);
+   close(fd);
+   return output_copy;
+}
+
+int8_t* int8_alu_op(int8_t* a, int8_t* b, uint32_t alu_algorithm)
+{
+   int fd = getDeviceFd();
+   npu_reset(fd);
+
+   rknn_tensor_type dtype = RKNN_TENSOR_INT8;
+
+   size_t bytes = get_type_size(dtype);
+   struct MemHandles handles = createRegCmd(fd, bytes, bytes, bytes, alu_algorithm);
+   int8_t *output_copy = NULL;
+   if (!handles.input || !handles.weights || !handles.output || !handles.tasks) {
+      release_memhandles(fd, &handles);
+      close(fd);
+      return NULL;
+   }
+   int8_t *weights_int8 = (int8_t*)((char*)handles.weights + REGCMD_RESERVED);
+   int8_t *feature_data_int8 = (int8_t*)(handles.input);
+   int8_t *output_data = (int8_t*)(handles.output);
+
+   memcpy(weights_int8, a, bytes);
+   memcpy(feature_data_int8, b, bytes);
+
+   mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
+   if(ret < 0) {
+         printf("RKNPU_SUBMIT failed %d\n",ret);
+         release_memhandles(fd, &handles);
+         close(fd);
+         return NULL;
+   }
+   mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_FROM_DEVICE);
+   output_copy = (int8_t*)malloc(bytes);
+   if (!output_copy) {
+      printf("failed to allocate int8 output copy\n");
+      release_memhandles(fd, &handles);
+      close(fd);
+      return NULL;
+   }
+   memcpy(output_copy, output_data, bytes);
    release_memhandles(fd, &handles);
    close(fd);
    return output_copy;

@@ -3417,18 +3417,19 @@ static int run_relu_case(const ReluTestConfig *config) {
   return matches ? 0 : -1;
 }
 
-static void load_fixed_silu_inputs(__fp16 *dst, size_t total_elements) {
-  static const uint16_t feature_bits[] = {
-      0x3240, 0x3ae3, 0x3694, 0x31bf,
-      0xb4e3, 0x38ab, 0xb3fd, 0x3e45,
-      0x3f6b, 0xb776, 0x3cab, 0x2f66,
-      0x345b, 0x3ecf, 0xbedd, 0xbe9b,
-  };
-  size_t n = sizeof(feature_bits) / sizeof(feature_bits[0]);
-  if (total_elements > n) total_elements = n;
+static void load_linear_inputs(__fp16 *dst, size_t total_elements) {
+  if (!dst || total_elements == 0) return;
+  const float low = -3.0f;
+  const float high = 3.0f;
+  if (total_elements == 1) {
+    dst[0] = (__fp16)0.0f;
+    return;
+  }
+  const float range = high - low;
   for (size_t i = 0; i < total_elements; i++) {
-    uint16_t bits = feature_bits[i];
-    memcpy(&dst[i], &bits, sizeof(uint16_t));
+    float t = (float)i / (float)(total_elements - 1);
+    float x = low + range * t;
+    dst[i] = (__fp16)x;
   }
 }
 
@@ -3474,7 +3475,8 @@ static __fp16 *float16_alu_op_padded(const __fp16 *weights, const __fp16 *featur
   rknn_tensor_type dtype = RKNN_TENSOR_FLOAT16;
   size_t elem_bytes = get_type_size(dtype);
   size_t weights_bytes = (size_t)size * elem_bytes;
-  size_t packed_input_bytes = 0x140;  // covers up to 0x130 in the desired layout
+  size_t packed_input_bytes = (size_t)size * 0x10;
+  if (packed_input_bytes < 0x140) packed_input_bytes = 0x140;
   size_t output_bytes = (size_t)size * 0x10;  // outputs are spaced every 0x10 bytes
 
   struct MemHandles handles = createRegCmd(fd, packed_input_bytes, weights_bytes, output_bytes, alu_algorithm);
@@ -3615,6 +3617,7 @@ static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
         &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
+  set_lut_params(rows, cols);
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
@@ -3623,7 +3626,7 @@ static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   const float index_scale = 5216.0f;
   const float step = 32.0f / index_scale;
   const float max_x = 512.0f * step;
@@ -3782,7 +3785,7 @@ static int run_silu_case(const SiluTestConfig *config) {
   printf("%s: allocated %zu elements\n", name, total_elements);
 
   // Use fixed fp16 inputs to mirror the desired packed layout.
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   for (size_t i = 0; i < total_elements; i++) {
     weights[i] = (__fp16)0;  // unused but keep buffer layout identical
   }
@@ -3918,7 +3921,7 @@ static int run_sigmoid_case(const SigmoidTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   for (size_t i = 0; i < total_elements; i++) {
     weights[i] = (__fp16)0;
     expected[i] = 1.0f / (1.0f + expf(-(float)features[i]));
@@ -3989,7 +3992,7 @@ static int run_sin_case(const SinTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   for (size_t i = 0; i < total_elements; i++) {
     weights[i] = (__fp16)0;
     expected[i] = sinf((float)features[i]);
@@ -4061,7 +4064,7 @@ static int run_tan_case(const TanTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   for (size_t i = 0; i < total_elements; i++) {
     weights[i] = (__fp16)0;
     expected[i] = tanhf((float)features[i]);
@@ -4133,7 +4136,7 @@ static int run_cos_case(const CosTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   for (size_t i = 0; i < total_elements; i++) {
     weights[i] = (__fp16)0;
     expected[i] = cosf((float)features[i]);
@@ -4417,7 +4420,7 @@ static int run_atan_case(const AtanTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   const float inv_half_pi = 0.63661977236f;
   for (size_t i = 0; i < total_elements; i++) {
     float x = (float)features[i];
@@ -4491,7 +4494,7 @@ static int run_asinh_case(const AsinhTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   const float inv_asinh_max = 0.26283636686f;
   for (size_t i = 0; i < total_elements; i++) {
     float x = (float)features[i];
@@ -4639,7 +4642,7 @@ static int run_sinh_case(const SinhTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   const float index_scale = 5216.0f;
   const float step = 32.0f / index_scale;
   const float max_x = 512.0f * step;
@@ -4716,7 +4719,7 @@ static int run_cosh_case(const CoshTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   const float index_scale = 5216.0f;
   const float step = 32.0f / index_scale;
   const float max_x = 512.0f * step;
@@ -4793,7 +4796,7 @@ static int run_tanh_case(const TanhTestConfig *config) {
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
 
-  load_fixed_silu_inputs(features, total_elements);
+  load_linear_inputs(features, total_elements);
   for (size_t i = 0; i < total_elements; i++) {
     weights[i] = (__fp16)0;
     expected[i] = tanhf((float)features[i]);
@@ -6632,7 +6635,11 @@ int test_exp2(int argc, char **argv) {
     return run_exp2_case(&cli_config);
   }
   static const LutTestConfig configs[] = {
+      {"exp2_1x1", 1, 1},
+      {"exp2_2x2", 2, 2},
       {"exp2_4x4", 4, 4},
+      {"exp2_6x6", 6, 6},
+      {"exp2_32x32", 32, 32},
       {"exp2_64x64", 64, 64},
   };
   int status = 0;
