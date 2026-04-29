@@ -1041,7 +1041,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int dataout_atomics = dataout_width * out_h;
          int aligned_in_channels = ((conv_in_channels + align_c - 1) / align_c) * align_c;
          int weight_bytes_per_kernel = conv_kernel_h * conv_kernel_w * aligned_in_channels * sizeof(__fp16);
-         int surface_add = out_width_stride * 2;
+         int surface_add = 0;
          int cbuf_entries = 0;
          printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
             conv_batch, conv_in_channels, in_h, in_w,
@@ -1049,20 +1049,16 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
 
          if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 1 && conv_in_channels == 3 && conv_out_channels == 6) {
            out_width_stride = 24;
-           surface_add = out_width_stride * 2;
          }
          if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
            out_width_stride = 16;
-           surface_add = out_width_stride * 2;
          }
          if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 5 && conv_in_channels == 3 && conv_out_channels == 6) {
            int stride_width = out_w > 1 ? (out_w - 1) : out_w;
            out_width_stride = (stride_width * align_out_c) / 4;
-           surface_add = out_width_stride * 2;
          }
          if (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
            out_width_stride = 16;
-           surface_add = out_width_stride * 2;
          }
          int feature_grains = 7;
          if ((conv_groups == 1 && conv_kernel_h == 3 && (conv_kernel_w == 1 || conv_kernel_w == 3 || conv_kernel_w == 5) &&
@@ -1107,7 +1103,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             feature_grains = 21;
             width_stride = in_w;
             data_in_channel_aligned = 16;
-            surface_add = 512;
             out_width_stride = 256;
             weight_bytes_per_kernel = 288; 
             align_c = 16;
@@ -1130,14 +1125,12 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             weight_bytes_per_kernel = 144; 
             cv5_con5 = 0x0000ffff;
             out_width_stride = 52;
-            surface_add = 104;
          }
          else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
             conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
             feature_grains = 8;
             cv5_con5 = 0x0000ffff;
             out_width_stride = 16;
-            surface_add = 32;
          }
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==1 && in_w==1 &&
             conv_out_channels==2 && weight_in_channels==2 && conv_kernel_h==1 && conv_kernel_w==1) {
@@ -1154,7 +1147,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
             cv5_con5 = 0;
-            surface_add = 4096;
          }
          else if ( conv_batch==1 && conv_in_channels==15 && in_h==5 && in_w==5 &&
             conv_out_channels==35 && weight_in_channels==3 && conv_kernel_h==3 && conv_kernel_w==3) {
@@ -1165,7 +1157,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             align_c = 16 ;
             cv5_con5 = 0;
             out_width_stride = 12;
-            surface_add = 24;
          }
          else if ( conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
             conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
@@ -1176,7 +1167,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             cv5_con5 = 0;
             out_width_stride = 236;
-            surface_add = 944;
             core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
             out_channel_field = 31;
          }
@@ -1271,6 +1261,16 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1) | DPU_EW_CFG_EW_LUT_BYPASS(1) | DPU_EW_CFG_EW_OP_BYPASS(1) | DPU_EW_CFG_EW_BYPASS(1));
          EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
          EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+         // DPU surface add: stride per surface row in 16B units.
+         int effective_align_out = out_channel_field + 1;
+         if (conv_groups > 1 &&
+               !(conv_groups == conv_in_channels && conv_out_channels == conv_in_channels)) {
+            int per_group_out = (conv_out_channels + conv_groups - 1) / conv_groups;
+            int per_group_align = align_up_int(per_group_out, 16);
+            if (per_group_align < 16) per_group_align = 16;
+            effective_align_out = per_group_align;
+         }
+         surface_add = out_width_stride * (effective_align_out / 8);
          EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(surface_add));
          emit_raw(&regs, 0x0 | 0x1, 0x40c4, 0);
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(6) | PC_OPERATION_ENABLE_OP_EN(1));
