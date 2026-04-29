@@ -1081,7 +1081,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             surf_stride = 32;
 
          }
-         int data_bank = 1;
          printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
             conv_batch, conv_in_channels, in_h, in_w,
             conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
@@ -1236,10 +1235,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          }
          else if ( conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
             conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
-            conv_con1 |= CNA_CONV_CON1_CONV_MODE(3);
-            feature_grains = 14;
-            width_stride = 28;
-            weight_bytes_total = 0x90;
+            // conv_con1 |= CNA_CONV_CON1_CONV_MODE(3);
+            // feature_grains = 14;
+            // width_stride = 28;
+            // weight_bytes_total = 0x90;
             weight_kernels = 1;
             cbuf_entries = 7;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
@@ -1264,13 +1263,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          if (weight_kernels == 0) weight_kernels = conv_out_channels;
          EMIT(REG_CNA_WEIGHT_SIZE2, CNA_WEIGHT_SIZE2_WEIGHT_WIDTH(conv_kernel_w) | CNA_WEIGHT_SIZE2_WEIGHT_HEIGHT(conv_kernel_h) | CNA_WEIGHT_SIZE2_WEIGHT_KERNELS(weight_kernels));
 
-         data_bank = (cbuf_entries + 1023) / 1024;
+         size_t fd_bytes = (size_t)width_stride * (size_t)feature_grains * (size_t)align_c * sizeof(__fp16);
+         int data_bank = (int)((fd_bytes + NPU_CBUF_BANK_SIZE - 1) / NPU_CBUF_BANK_SIZE);
          if (data_bank < 1) data_bank = 1;
-         if (data_bank > NPU_CBUF_BANKS-1) data_bank = NPU_CBUF_BANKS-1;
-         if (  conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
-            conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) {
-               data_bank = 2 ;
-         };
+         if (data_bank > NPU_CBUF_BANKS - 1) data_bank = NPU_CBUF_BANKS - 1;
          EMIT(REG_CNA_CBUF_CON0, CNA_CBUF_CON0_WEIGHT_BANK(NPU_CBUF_BANKS - data_bank) | CNA_CBUF_CON0_DATA_BANK(data_bank));
          EMIT(REG_CNA_CBUF_CON1, CNA_CBUF_CON1_DATA_ENTRIES(cbuf_entries));
          EMIT(REG_CNA_CVT_CON0, cvt_con0);
