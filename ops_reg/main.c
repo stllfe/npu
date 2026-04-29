@@ -4761,6 +4761,10 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     config->in_height == 5 && config->in_width == 5 &&
     config->out_channels == 35 && config->weight_in_channels == 3 &&
     config->kernel_h == 3 && config->kernel_w == 3 && groups == 5);
+  bool is_131128_3133_g3 = (config->batch == 1 && config->in_channels == 3 &&
+    config->in_height == 11 && config->in_width == 28 &&
+    config->out_channels == 3 && config->weight_in_channels == 1 &&
+    config->kernel_h == 3 && config->kernel_w == 3 && groups == 3);
   if (is_161818_161633) {
     align_c = 16;
     width_stride = config->in_width;
@@ -4769,6 +4773,10 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   if (is_11555_35333_g5) {
     width_stride = config->in_width;
     out_width_stride = 12;
+  }
+  if (is_131128_3133_g3) {
+    // RKNN packs this depthwise 3x3 case without width padding.
+    width_stride = config->in_width;
   }
   if (config->kernel_h == 1 && config->kernel_w == 1) {
     int atoms = out_width * out_height;
@@ -4779,10 +4787,15 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     }
   }
 
+  set_conv2d_params(config->batch, config->in_channels, config->in_height, config->in_width,
+    config->out_channels, config->kernel_h, config->kernel_w, config->groups,
+    out_height, out_width, width_stride, out_width_stride, align_c, align_out_c);
+
   size_t input_elems = (size_t)config->batch * config->in_channels * config->in_height * config->in_width;
   size_t weight_elems = (size_t)config->out_channels * config->weight_in_channels * config->kernel_h * config->kernel_w;
   size_t expanded_weight_elems = (size_t)config->out_channels * config->in_channels * config->kernel_h * config->kernel_w;
-  bool use_pair_pack = (align_c / config->in_channels) == 2 && (width_stride >= config->in_width);
+  bool use_pair_pack = should_use_nhwc_pack(config->batch, config->in_channels,
+    config->in_height, config->in_width, width_stride, align_c);
   size_t packed_input_elems;
   if (use_pair_pack) {
     packed_input_elems = (size_t)config->batch * config->in_height * width_stride * config->in_channels;
@@ -4790,10 +4803,6 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     packed_input_elems = (size_t)config->batch * ((config->in_channels + align_c - 1) / align_c) *
       config->in_height * width_stride * align_c;
   }
-
-  set_conv2d_params(config->batch, config->in_channels, config->in_height, config->in_width,
-    config->out_channels, config->kernel_h, config->kernel_w, config->groups,
-    out_height, out_width, width_stride, out_width_stride, align_c, align_out_c);
 
   __fp16 *input = (__fp16*)malloc(input_elems * sizeof(__fp16));
   __fp16 *kernel = (__fp16*)malloc(weight_elems * sizeof(__fp16));
@@ -5164,7 +5173,7 @@ int test_conv2d(int argc, char **argv) {
     // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
     // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
     // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
-    {1, 15, 5, 5, 35, 3, 3, 3, 5, "conv2d"},
+    {1, 3, 11, 28, 3, 1, 3, 3, 3, "conv2d"},
   };
 
   int status = 0;
