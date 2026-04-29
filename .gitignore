@@ -37,4 +37,7 @@ ops_rknn/alloc_weight_loop_rknn
 ops_reg/alloc_weight_loop
 ops_ref/*
 ops_minimal/*
-ops_common/*
+ops_common/*ops_reg/dump/
+ops_reg/main
+ops_rknn/models/
+ops_rknn/dump/
