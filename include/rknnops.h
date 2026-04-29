@@ -1044,8 +1044,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int data_in_channel_aligned = 0;
          int dataout_width = out_w;
          int dataout_atomics = dataout_width * out_h;
-         int aligned_in_channels = ((conv_in_channels + align_c - 1) / align_c) * align_c;
-         int weight_bytes_per_kernel = conv_kernel_h * conv_kernel_w * aligned_in_channels * sizeof(__fp16);
+         int weight_bytes_per_kernel = 0;
          int surface_add = 0;
          int cbuf_entries = 0;
          printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
@@ -1070,19 +1069,16 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          if (( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
             width_stride = in_w;
-            weight_bytes_per_kernel = 288; 
             align_c = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
          }
          else if ( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1) {
-            weight_bytes_per_kernel = 32; 
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             align_c = 16;
          }
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
             conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==3 && conv_kernel_w==3) {
-            weight_bytes_per_kernel = 144; 
          }
          else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
             conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
@@ -1118,6 +1114,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          // Align channel count to NC1HWC2 pack factor.
          data_in_channel_aligned = align_up_int(conv_in_channels, align_c);
          if (data_in_channel_aligned < align_c) data_in_channel_aligned = align_c;
+         weight_bytes_per_kernel = conv_kernel_h * conv_kernel_w * data_in_channel_aligned * sizeof(__fp16);
 
          // Feature grains: target one extra row, cap by ~2 CBUF banks.
          int feature_grains = in_h + conv_kernel_h;
