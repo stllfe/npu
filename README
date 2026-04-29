@@ -3,13 +3,20 @@
 matmul failed at
 - 424x424x424, fixed in another branch
 
+conv2d failed at
+- i:1,3,72,72 w:6,3,1,1
+
 # What works
-33x1x33 works
-65x1x33 works
-1x1x1 to 414x414x414 works
-1x1x1 to 1x8192x8192 works
-1x8192x8192 to 1x8192x15000 works
-1x8192x8192 to 1x18605x8192 works
+matmul 
+- 33x1x33 works
+- 65x1x33 works
+- 1x1x1 to 414x414x414 works
+- 1x1x1 to 1x8192x8192 works
+- 1x8192x8192 to 1x8192x15000 works
+- 1x8192x8192 to 1x18605x8192 works
+
+conv2d
+- i(1,3,1,1) w:(6,3,1,1) to i:(1,3,71,71) w:(6,3,1,1) works
 
 # How to do matmul in RK3588
 ## Input and output dimension 

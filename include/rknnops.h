@@ -1033,21 +1033,43 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
                 conv_in_channels == 3 && conv_out_channels == 6) ||
             (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6)) {
             surf_stride = 32;
+
          }
+         int data_bank = 1;
          printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
             conv_batch, conv_in_channels, in_h, in_w,
             conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
          if (conv_batch == 1 && conv_in_channels == 3 &&
              conv_out_channels == 6 && weight_in_channels == 3 &&
              conv_kernel_h == 1 && conv_kernel_w == 1) {
+            {
+               int grains = (out_h < 48) ? (out_h + 1) : out_h;
+               uint64_t row_bytes = (uint64_t)width_stride * (uint64_t)align_c * sizeof(__fp16);
+               if (row_bytes > 0) {
+                  uint32_t max_grains = (uint32_t)((2u * (uint64_t)NPU_CBUF_BANK_SIZE + row_bytes - 1) / row_bytes);
+                  max_grains = (max_grains + 1u) & ~1u; // keep even like matmul
+                  if (max_grains < 2u) max_grains = 2u;
+                  if (grains > (int)max_grains) grains = (int)max_grains;
+               }
+               feature_grains = grains;
+            }
+            
+            cbuf_entries = width_stride * out_h;
+            surf_stride = (out_h > 1) ? (width_stride * (out_h - 1)) : 0;
             if (in_h == 2 && in_w == 2){
                cbuf_entries = 16;
                surf_stride = 8;
             } 
-            else if (in_h == 3 && in_w == 3){
-               feature_grains = 4;
-               cbuf_entries = 24;
+            
+            if (in_h == in_w) {
+               feature_grains = in_w;
+               cbuf_entries = width_stride * out_h;
             }
+            
+            if (in_h > 32 && in_w > 32) data_bank = 2 ;
+            if (in_h > 42 && in_w > 42) data_bank = 3 ;
+            if (in_h > 54 && in_w > 54) data_bank = 4 ;
+            if (in_h > 64 && in_w > 64) data_bank = 5 ;
          }
 
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
@@ -1061,7 +1083,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_CNA_WEIGHT_SIZE0, weight_bytes_total);
          EMIT(REG_CNA_WEIGHT_SIZE1, CNA_WEIGHT_SIZE1_WEIGHT_BYTES_PER_KERNEL(weight_bytes_per_kernel));
          EMIT(REG_CNA_WEIGHT_SIZE2, CNA_WEIGHT_SIZE2_WEIGHT_WIDTH(conv_kernel_w) | CNA_WEIGHT_SIZE2_WEIGHT_HEIGHT(conv_kernel_h) | CNA_WEIGHT_SIZE2_WEIGHT_KERNELS(conv_out_channels));
-         EMIT(REG_CNA_CBUF_CON0, CNA_CBUF_CON0_WEIGHT_BANK(11) | CNA_CBUF_CON0_DATA_BANK(1));
+         EMIT(REG_CNA_CBUF_CON0, CNA_CBUF_CON0_WEIGHT_BANK(NPU_CBUF_BANKS - data_bank) | CNA_CBUF_CON0_DATA_BANK(data_bank));
          EMIT(REG_CNA_CBUF_CON1, CNA_CBUF_CON1_DATA_ENTRIES(cbuf_entries));
          EMIT(REG_CNA_CVT_CON0, CNA_CVT_CON0_CVT_BYPASS(1));
          EMIT(REG_CNA_CVT_CON1, CNA_CVT_CON1_CVT_SCALE0(1));
@@ -4506,8 +4528,8 @@ struct MemHandles createRegCmd(int fd, size_t input_size, size_t weights_size, s
    uint32_t input_handle;
    uint64_t weights_dma, weights_obj;
    uint32_t weights_handle;
-   uint64_t output_dma, output_obj;
-   uint32_t output_handle;
+   uint64_t output_dma = 0, output_obj = 0;
+   uint32_t output_handle = 0;
 
    printf("%zu %zu %zu\n", input_size, weights_size, output_size);
    const size_t tasks_size = 1024;
@@ -4529,7 +4551,8 @@ struct MemHandles createRegCmd(int fd, size_t input_size, size_t weights_size, s
    const size_t weights_offset = regcmd_reserved;
    const size_t weights_alloc_size = regcmd_reserved + weights_aligned;
    void *weights = mem_allocate(fd, weights_alloc_size, &weights_dma, &weights_obj,
-      RKNPU_MEM_NON_CONTIGUOUS | RKNPU_MEM_CACHEABLE | RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT,
+      RKNPU_MEM_NON_CONTIGUOUS | RKNPU_MEM_CACHEABLE | RKNPU_MEM_IOMMU |
+      RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT,
       &weights_handle);
    if (!weights) {
       printf("weights mmap failed (size=%zu, aligned=%zu)\n", weights_alloc_size, weights_aligned);
@@ -4542,7 +4565,8 @@ struct MemHandles createRegCmd(int fd, size_t input_size, size_t weights_size, s
    handles.weights_obj = weights_obj;
    handles.weights_handle = weights_handle;
    
-   void *input = mem_allocate(fd, input_size, &input_dma, &input_obj, RKNPU_MEM_CACHEABLE, &input_handle);
+   void *input = mem_allocate(fd, input_size, &input_dma, &input_obj,
+      RKNPU_MEM_CACHEABLE | RKNPU_MEM_IOMMU, &input_handle);
    if (!input) {
       printf("input mmap failed\n");
       release_memhandles(fd, &handles);
@@ -4554,11 +4578,17 @@ struct MemHandles createRegCmd(int fd, size_t input_size, size_t weights_size, s
    handles.input_obj = input_obj;
    handles.input_handle = input_handle;
 
-   void *output = mem_allocate(fd, output_size, &output_dma, &output_obj, RKNPU_MEM_CACHEABLE, &output_handle);
+   uint32_t output_flags = RKNPU_MEM_CACHEABLE | RKNPU_MEM_IOMMU;
+   void *output = mem_allocate(fd, output_size, &output_dma, &output_obj, output_flags, &output_handle);
    if (!output) {
-      printf("output mmap failed\n");
-      release_memhandles(fd, &handles);
-      return (struct MemHandles){0};
+      output_flags = RKNPU_MEM_NON_CONTIGUOUS | RKNPU_MEM_CACHEABLE | RKNPU_MEM_IOMMU |
+         RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT;
+      output = mem_allocate(fd, output_size, &output_dma, &output_obj, output_flags, &output_handle);
+      if (!output) {
+         printf("output mmap failed\n");
+         release_memhandles(fd, &handles);
+         return (struct MemHandles){0};
+      }
    }
    handles.output = output;
    handles.output_size = output_size;
@@ -4660,9 +4690,13 @@ struct MemHandles createRegCmd(int fd, size_t input_size, size_t weights_size, s
 
 int submitTask(int fd, uint64_t tasks_obj, size_t task_count){
    if (task_count == 0) task_count = 1;
-   printf("submitTask flags %d\n", RKNPU_JOB_PC | RKNPU_JOB_BLOCK | RKNPU_JOB_PINGPONG) ;
+   uint32_t submit_flags = RKNPU_JOB_PC | RKNPU_JOB_BLOCK;
+   if (current_alu_algorithm != 13) {
+      submit_flags |= RKNPU_JOB_PINGPONG;
+   }
+   printf("submitTask flags %u\n", submit_flags);
    struct rknpu_submit submit = {
-      .flags = RKNPU_JOB_PC | RKNPU_JOB_BLOCK | RKNPU_JOB_PINGPONG,
+      .flags = submit_flags,
       .timeout = 10000,
       .task_start = 0,
       .task_number = (uint32_t)task_count,
@@ -4776,6 +4810,9 @@ Float16ConvResult float16_conv(__fp16* input, __fp16* kernel, uint32_t alu_algor
       return result;
    }
    mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_FROM_DEVICE);
+   if (handles.output && handles.output_size > 0) {
+      msync(handles.output, handles.output_size, MS_INVALIDATE);
+   }
    return result;
 }
 
@@ -4824,7 +4861,7 @@ __fp16* float16_conv2d(__fp16* input, __fp16* kernel, uint32_t alu_algorithm, in
       size_t packed_output_elems =
          (size_t)conv_batch *
          (size_t)((conv_out_channels + conv_align_out_c - 1) / conv_align_out_c) *
-         (conv_in_height - conv_kernel_h + 1) *
+         (size_t)(conv_in_height - conv_kernel_h + 1) *
          conv_out_width_stride * conv_align_out_c;
       input_bytes = packed_input_elems * sizeof(__fp16);
       kernel_bytes = packed_weight_elems * sizeof(__fp16);
@@ -4863,6 +4900,8 @@ __fp16* float16_conv2d(__fp16* input, __fp16* kernel, uint32_t alu_algorithm, in
 
    mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
    mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   mem_sync(fd, handles.tasks_obj, 0, handles.tasks_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_TO_DEVICE);
    printf("task_count %zu\n", handles.task_count);
    int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
    if(ret < 0) {

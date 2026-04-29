@@ -48,6 +48,9 @@ fi
 
 g++ -o "${OP}" "${CPP}" -I../include -lrknnrt -std=c++11
 
+DUMP_DIR="${RKNN_DUMP_DIR:-dumps}"
+mkdir -p "${DUMP_DIR}"
+
 : > run_output.txt
 if [ "${GDB}" = "1" ] && [ "${OP}" = "matmul_api" ]; then
   gdb -x matmul.gdb --args "${BIN}" "$@" | tee run_output.txt

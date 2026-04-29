@@ -4836,6 +4836,7 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   int tile_max_h = 0;
   if (config->kernel_h == 1 && config->kernel_w == 1) {
     tile_max_h = 11264 / width_stride;
+    // if (tile_max_h > 55) tile_max_h = 55;
     if (tile_max_h < 1) tile_max_h = 1;
     use_tile = (out_height > tile_max_h);
   }
@@ -4986,7 +4987,7 @@ int test_conv2d(int argc, char **argv) {
     // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
     // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
     // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
-    {1, 3, 2, 2, 6, 3, 1, 1, 1, "conv2d"},
+    {1, 3, 65, 65, 6, 3, 1, 1, 1, "conv2d"},
   };
 
   int status = 0;

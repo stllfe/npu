@@ -55,6 +55,24 @@ struct ConvConfig {
   std::string description;
 };
 
+static ConvConfig make_conv2d_case_nchw_weight(const std::string& model_name,
+                                               int n, int c, int h, int w,
+                                               int oc, int ic_per_group, int kh, int kw,
+                                               const std::string& description) {
+  ConvConfig cfg;
+  cfg.model_name = model_name;
+  cfg.out_channels = oc;
+  cfg.in_channels = c;
+  cfg.in_height = h;
+  cfg.in_width = w;
+  cfg.kernel_h = kh;
+  cfg.kernel_w = kw;
+  cfg.groups = (ic_per_group > 0) ? (c / ic_per_group) : 1;
+  if (cfg.groups <= 0) cfg.groups = 1;
+  cfg.description = description;
+  return cfg;
+}
+
 // Simple MT19937 implementation (matches ops_reg/main.c)
 struct Mt19937 {
   uint32_t mt[624];
@@ -142,6 +160,23 @@ static std::vector<float> generate_weight_data(const ConvConfig& config, Mt19937
 static std::vector<__fp16> nchw_to_nhwc(const std::vector<__fp16>& src,
                                         int batch, int channels, int height, int width) {
   std::vector<__fp16> dst(src.size());
+  for (int n = 0; n < batch; ++n) {
+    for (int h = 0; h < height; ++h) {
+      for (int w = 0; w < width; ++w) {
+        for (int c = 0; c < channels; ++c) {
+          int nchw_idx = ((n * channels + c) * height + h) * width + w;
+          int nhwc_idx = ((n * height + h) * width + w) * channels + c;
+          dst[nhwc_idx] = src[nchw_idx];
+        }
+      }
+    }
+  }
+  return dst;
+}
+
+static std::vector<float> nchw_to_nhwc(const std::vector<float>& src,
+                                       int batch, int channels, int height, int width) {
+  std::vector<float> dst(src.size());
   for (int n = 0; n < batch; ++n) {
     for (int h = 0; h < height; ++h) {
       for (int w = 0; w < width; ++w) {
@@ -269,26 +304,6 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
             << ", size_with_stride: " << native_output_attr.size_with_stride
             << ", w_stride: " << native_output_attr.w_stride << std::endl;
 
-  uint32_t output_mem_size = native_output_attr.size_with_stride > 0 ? native_output_attr.size_with_stride
-                                                                     : native_output_attr.size;
-  rknn_tensor_mem* output_mem = rknn_create_mem(ctx, output_mem_size);
-  if (!output_mem) {
-    std::cerr << "rknn_create_mem failed for output" << std::endl;
-    rknn_destroy(ctx);
-    return false;
-  }
-
-  rknn_tensor_attr output_mem_attr = native_output_attr;
-  output_mem_attr.pass_through = 1;
-  // output_mem_attr.pass_through = 0;
-  ret = rknn_set_io_mem(ctx, output_mem, &output_mem_attr);
-  if (ret < 0) {
-    std::cerr << "rknn_set_io_mem failed: " << ret << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
-    rknn_destroy(ctx);
-    return false;
-  }
-
   // Prepare input data
   const int in_batch = 1;
   const int in_channels = config.in_channels > 0 ? config.in_channels : 3;
@@ -321,68 +336,55 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
     }
   }
 
-  const std::vector<__fp16>* formatted_input = &input;
+  const void* input_buf_ptr = nullptr;
+  uint32_t input_size_bytes = 0;
   std::vector<__fp16> input_nhwc;
-  std::vector<__fp16> input_padded;
-  if (native_input_attr.fmt == RKNN_TENSOR_NHWC) {
-    input_nhwc = nchw_to_nhwc(input, in_batch, in_channels, in_height, in_width);
-    formatted_input = &input_nhwc;
+  std::vector<float> input_nhwc_float;
 
-    int native_batch = (native_input_attr.n_dims > 0) ? native_input_attr.dims[0] : in_batch;
-    int native_height = (native_input_attr.n_dims > 1) ? native_input_attr.dims[1] : in_height;
-    int native_width = (native_input_attr.n_dims > 2) ? native_input_attr.dims[2] : in_width;
-    int native_channels = (native_input_attr.n_dims > 3) ? native_input_attr.dims[3] : in_channels;
-    int stride_w = native_input_attr.w_stride > 0 ? native_input_attr.w_stride : native_width;
-
-    if (stride_w != native_width) {
-      input_padded.assign(static_cast<size_t>(native_batch) * native_height * stride_w * native_channels,
-                          static_cast<__fp16>(0));
-      for (int n = 0; n < native_batch; ++n) {
-        for (int h = 0; h < native_height; ++h) {
-          for (int w = 0; w < native_width; ++w) {
-            for (int c = 0; c < native_channels; ++c) {
-              size_t src_idx = ((n * native_height + h) * native_width + w) * native_channels + c;
-              size_t dst_idx = ((n * native_height + h) * stride_w + w) * native_channels + c;
-              if (src_idx < input_nhwc.size() && dst_idx < input_padded.size()) {
-                input_padded[dst_idx] = input_nhwc[src_idx];
-              }
-            }
-          }
-        }
-      }
-      formatted_input = &input_padded;
+  if (input_attr.type == RKNN_TENSOR_FLOAT16) {
+    if (input_attr.fmt == RKNN_TENSOR_NHWC) {
+      input_nhwc = nchw_to_nhwc(input, in_batch, in_channels, in_height, in_width);
+      input_buf_ptr = input_nhwc.data();
+      input_size_bytes = static_cast<uint32_t>(input_nhwc.size() * sizeof(__fp16));
+    } else if (input_attr.fmt == RKNN_TENSOR_NCHW) {
+      input_buf_ptr = input.data();
+      input_size_bytes = static_cast<uint32_t>(input.size() * sizeof(__fp16));
+    } else {
+      std::cerr << "Unsupported input format: " << input_attr.fmt << std::endl;
+      rknn_destroy(ctx);
+      return false;
     }
-  } else if (native_input_attr.fmt != RKNN_TENSOR_NCHW) {
-    std::cerr << "Unsupported native input format: " << native_input_attr.fmt << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
+  } else if (input_attr.type == RKNN_TENSOR_FLOAT32) {
+    if (input_attr.fmt == RKNN_TENSOR_NHWC) {
+      input_nhwc_float = nchw_to_nhwc(input_cpu, in_batch, in_channels, in_height, in_width);
+      input_buf_ptr = input_nhwc_float.data();
+      input_size_bytes = static_cast<uint32_t>(input_nhwc_float.size() * sizeof(float));
+    } else if (input_attr.fmt == RKNN_TENSOR_NCHW) {
+      input_buf_ptr = input_cpu.data();
+      input_size_bytes = static_cast<uint32_t>(input_cpu.size() * sizeof(float));
+    } else {
+      std::cerr << "Unsupported input format: " << input_attr.fmt << std::endl;
+      rknn_destroy(ctx);
+      return false;
+    }
+  } else {
+    std::cerr << "Unsupported input type: " << input_attr.type << std::endl;
     rknn_destroy(ctx);
     return false;
   }
 
-  if (native_input_attr.type != RKNN_TENSOR_FLOAT16) {
-    std::cerr << "Unsupported native input type (expected FP16): " << native_input_attr.type << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
-    rknn_destroy(ctx);
-    return false;
-  }
-
-  const void* input_buf_ptr = static_cast<const void*>(formatted_input->data());
-  uint32_t input_size_bytes = static_cast<uint32_t>(formatted_input->size() * sizeof(__fp16));
-
-  // Set input
   rknn_input input_desc;
   std::memset(&input_desc, 0, sizeof(input_desc));
   input_desc.index = 0;
   input_desc.buf = const_cast<void*>(input_buf_ptr);
-  input_desc.size = (native_input_attr.size_with_stride > 0) ? native_input_attr.size_with_stride : input_size_bytes;
-  input_desc.pass_through = 1;
-  input_desc.type = static_cast<rknn_tensor_type>(native_input_attr.type);
-  input_desc.fmt = static_cast<rknn_tensor_format>(native_input_attr.fmt);
+  input_desc.size = input_size_bytes;
+  input_desc.pass_through = 0;
+  input_desc.type = static_cast<rknn_tensor_type>(input_attr.type);
+  input_desc.fmt = static_cast<rknn_tensor_format>(input_attr.fmt);
 
   ret = rknn_inputs_set(ctx, 1, &input_desc);
   if (ret < 0) {
     std::cerr << "rknn_inputs_set failed: " << ret << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
     rknn_destroy(ctx);
     return false;
   }
@@ -392,23 +394,19 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
   ret = rknn_run(ctx, nullptr);
   if (ret < 0) {
     std::cerr << "rknn_run failed: " << ret << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
     rknn_destroy(ctx);
     return false;
   }
 
   rknn_output output_desc;
   std::memset(&output_desc, 0, sizeof(output_desc));
-  output_desc.want_float = 0;
-  output_desc.is_prealloc = 1;
+  output_desc.want_float = 1;
+  output_desc.is_prealloc = 0;
   output_desc.index = 0;
-  output_desc.buf = output_mem->virt_addr;
-  output_desc.size = output_mem_size;
 
   ret = rknn_outputs_get(ctx, 1, &output_desc, nullptr);
   if (ret < 0) {
     std::cerr << "rknn_outputs_get failed: " << ret << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
     rknn_destroy(ctx);
     return false;
   }
@@ -420,7 +418,7 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
   ret = rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &output_attr, sizeof(output_attr));
   if (ret < 0) {
     std::cerr << "rknn_query output attr failed: " << ret << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
+    rknn_outputs_release(ctx, 1, &output_desc);
     rknn_destroy(ctx);
     return false;
   }
@@ -451,7 +449,7 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
     std::cerr << "  Expected: " << (in_height - config.kernel_h + 1) << "x"
               << (in_width - config.kernel_w + 1) << std::endl;
     std::cerr << "  Got: " << out_height << "x" << out_width << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
+    rknn_outputs_release(ctx, 1, &output_desc);
     rknn_destroy(ctx);
     return false;
   }
@@ -459,55 +457,36 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
   std::cout << "  Output shape: " << out_batch << "x" << out_channels
             << "x" << out_height << "x" << out_width << std::endl;
 
-  // Sync and convert raw output from NC1HWC2 FP16 to NCHW float32
-  ret = rknn_mem_sync(ctx, output_mem, RKNN_MEMORY_SYNC_FROM_DEVICE);
-  if (ret < 0) {
-    std::cerr << "rknn_mem_sync failed: " << ret << std::endl;
-    rknn_destroy_mem(ctx, output_mem);
+  const float* hw_output = static_cast<const float*>(output_desc.buf);
+  size_t expected_elems = static_cast<size_t>(out_batch) * out_channels * out_height * out_width;
+  size_t output_elems = output_desc.size / sizeof(float);
+  if (output_elems < expected_elems) {
+    std::cerr << "Output buffer too small: " << output_elems << " < " << expected_elems << std::endl;
+    rknn_outputs_release(ctx, 1, &output_desc);
     rknn_destroy(ctx);
     return false;
   }
 
-  const __fp16* hw_output = reinterpret_cast<const __fp16*>(output_mem->virt_addr);
-  int native_batch = native_output_attr.n_dims > 0 ? native_output_attr.dims[0] : out_batch;
-  int native_c1 = native_output_attr.n_dims > 1 ? native_output_attr.dims[1] : 1;
-  int native_height = native_output_attr.n_dims > 2 ? native_output_attr.dims[2] : out_height;
-  int native_width = native_output_attr.n_dims > 3 ? native_output_attr.dims[3] : out_width;
-  int native_c2 = native_output_attr.n_dims > 4 ? native_output_attr.dims[4] : 1;
-  int stride_w = native_output_attr.w_stride > 0 ? native_output_attr.w_stride : native_width;
-
-  // Some RKNN conv2d models flatten H*W into a single spatial dimension (e.g., NC1HWC2 with H=1, W=out_h*out_w padded).
-  // If the native dims don't match the logical output, re-interpret the spatial extent using stride_w and reshape later.
-  int decode_height = native_height;
-  int decode_width = native_width;
-  bool needs_reshape = false;
-  if (decode_height * decode_width != out_height * out_width) {
-    decode_height = 1;
-    decode_width = stride_w;
-    needs_reshape = true;
-  }
-
-  std::vector<float> output_nchw = nc1hwc2_fp16_to_nchw(
-    hw_output, native_batch, native_c1, decode_height, decode_width,
-    stride_w, native_c2, out_channels);
-
-  if (needs_reshape && static_cast<int>(output_nchw.size()) == out_batch * out_channels * decode_height * decode_width) {
-    std::vector<float> reshaped(out_batch * out_channels * out_height * out_width, 0.f);
+  std::vector<float> output_nchw(expected_elems, 0.f);
+  if (output_attr.fmt == RKNN_TENSOR_NHWC) {
     for (int n = 0; n < out_batch; ++n) {
-      for (int c = 0; c < out_channels; ++c) {
-        for (int h = 0; h < out_height; ++h) {
-          for (int w = 0; w < out_width; ++w) {
-            int flat = h * out_width + w;
-            size_t src_idx = ((n * out_channels + c) * decode_height + 0) * decode_width + flat;
+      for (int h = 0; h < out_height; ++h) {
+        for (int w = 0; w < out_width; ++w) {
+          for (int c = 0; c < out_channels; ++c) {
+            size_t src_idx = ((n * out_height + h) * out_width + w) * out_channels + c;
             size_t dst_idx = ((n * out_channels + c) * out_height + h) * out_width + w;
-            if (src_idx < output_nchw.size() && dst_idx < reshaped.size()) {
-              reshaped[dst_idx] = output_nchw[src_idx];
-            }
+            output_nchw[dst_idx] = hw_output[src_idx];
           }
         }
       }
     }
-    output_nchw.swap(reshaped);
+  } else if (output_attr.fmt == RKNN_TENSOR_NCHW) {
+    std::memcpy(output_nchw.data(), hw_output, expected_elems * sizeof(float));
+  } else {
+    std::cerr << "Unsupported output format: " << output_attr.fmt << std::endl;
+    rknn_outputs_release(ctx, 1, &output_desc);
+    rknn_destroy(ctx);
+    return false;
   }
 
   // Compute expected results on CPU (NCHW) using the same RNG sequence for weights
@@ -623,7 +602,6 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
   }
 
   rknn_outputs_release(ctx, 1, &output_desc);
-  rknn_destroy_mem(ctx, output_mem);
   rknn_destroy(ctx);
 
   std::cout << "\n";
@@ -670,8 +648,11 @@ int main(int argc, char** argv) {
     // {"conv2d_3x3_g3", 6, 3, 5, 7, 3, 3, 3, "conv2d input shape (1, 3, 5, 7), weight shape (6, 1, 3, 3)"},
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d input shape (1, 3, 5, 7), weight shape (6, 3, 3, 5)"},
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d"},
-    {"conv2d_1x1_3", 6, 3, 3, 3, 1, 1, 1, "conv2d input shape (1, 3, 3, 3), weight shape (6, 3, 1, 1)"},
-
+    make_conv2d_case_nchw_weight(
+        "conv2d_1x1_65",
+        1, 3, 65, 65,
+        6, 3, 1, 1,
+        "conv2d input shape (1, 3, 19, 19), weight shape (6, 3, 1, 1)"),
     };
   }
 
