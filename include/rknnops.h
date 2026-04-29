@@ -1353,18 +1353,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          // }
          // if (params.M == 33 && params.K == 1 && params.N == 33 ) notch_val = 15;
          
-         uint32_t notch_blocks = ceil_div_u32((uint32_t)params.K, 32u);
-         if (params.K <= 32) {
-            uint32_t m_blocks = ceil_div_u32((uint32_t)params.M, 32u);
-            if (m_blocks > notch_blocks) {
-               notch_blocks = m_blocks;
-            }
-         }
+         uint32_t notch_blocks = (uint32_t)align_out / 32u; /* align_out is already 32-aligned */
          if (notch_blocks > 13u) notch_blocks = 13u;
          uint32_t notch_val = 8u * notch_blocks - 1u;
-
          if (is_KN_64 || is_KN_256 || is_KN_512 || params.K > 7872) notch_val = 0u;
-         if (params.M == 65 && params.K == 1 && params.N == 33 ) notch_val = 15u;
          EMIT(REG_DPU_DATA_CUBE_NOTCH_ADDR, DPU_DATA_CUBE_NOTCH_ADDR_NOTCH_ADDR_1(notch_val) |DPU_DATA_CUBE_NOTCH_ADDR_NOTCH_ADDR_0(notch_val));
          
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL((uint32_t)align_out - 1) | DPU_DATA_CUBE_CHANNEL_CHANNEL((uint32_t)align_out - 1));
