@@ -349,8 +349,7 @@ void set_alu_algorithm(uint32_t algo) {
 }
 
 static void
-emit_raw(DynamicArray *arr, uint32_t target, uint32_t reg,
-         uint64_t value)
+emit_raw(DynamicArray *arr, uint32_t target, uint32_t reg, uint64_t value)
 {
    uint64_t packed_value = 0;
    packed_value = ((uint64_t)target) << 48;
@@ -763,16 +762,6 @@ static inline double lut_map_exp2(double x, int side, void *ctx) {
    return exp2(xn);
 }
 
-// static inline uint64_t EMIT(uint32_t reg, uint32_t value){
-//    uint32_t target = rkt_get_target(reg) + 0x1;
- 
-//    uint64_t packed_value = 0;
-//    packed_value = ((uint64_t)target) << 48;
-//    packed_value |= ((uint64_t)value) << 16;
-//    packed_value |= (uint64_t)reg;
- 
-//    return packed_value;
-// }
 static void reset_reg_tracking(void) {
    reg_task_count = 0;
    reg_tracking_enabled = true;
@@ -4053,7 +4042,6 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
    __fp16 *weights_fp16 = (__fp16*)((char*)handles.weights + REGCMD_RESERVED);
    __fp16 *feature_data_fp16 = (__fp16*)(handles.input);
    __fp16 *output_data = (__fp16*)(handles.output);
-   // float* output_data_float = (float*)(handles.output);
 
    memset(weights_fp16, 0, packed_weight_bytes);
    memset(feature_data_fp16, 0, packed_input_bytes);
@@ -4086,14 +4074,8 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
    }
    mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_FROM_DEVICE);
 
-   // __fp16 *output_data_fp16 = (__fp16*)(handles.output);
-   // printf("\nMethod 1 - Correct fp16 casting: fp16=%f fp32=%f\n", 
-         //  output_data_fp16[0], (float)output_data_fp16[0]);
-
-   // Print the first element using the correct fp16 interpretation.
    __fp16* output_fp16 = (__fp16*)(handles.output);
-   printf("\nMethod 2 - float casting: fp16=%f fp32=%f\n", 
-          output_fp16[0], (float)output_fp16[0]);
+   printf("\nMethod 2 - float casting: fp16=%f fp32=%f\n", output_fp16[0], (float)output_fp16[0]);
 
    output_copy = (__fp16*)malloc(packed_output_bytes);
    if (!output_copy) {
@@ -4103,95 +4085,6 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
       return NULL;
    }
    memcpy(output_copy, output_data, packed_output_bytes);
-   release_memhandles(fd, &handles);
-   close(fd);
-   return output_copy;
-}
-
-int16_t* int16_alu_op(int16_t* a, int16_t* b, uint32_t alu_algorithm)
-{
-   int fd = getDeviceFd();
-   npu_reset(fd);
-   rknn_tensor_type dtype = RKNN_TENSOR_INT16;
-
-   size_t bytes = get_type_size(dtype);
-   struct MemHandles handles = createRegCmd(fd, bytes, bytes, bytes, alu_algorithm);
-   int16_t *output_copy = NULL;
-   if (!handles.input || !handles.weights || !handles.output || !handles.tasks) {
-      release_memhandles(fd, &handles);
-      close(fd);
-      return NULL;
-   }
-   int16_t *weights_int16 = (int16_t*)((char*)handles.weights + REGCMD_RESERVED);
-   int16_t *feature_data_int16 = (int16_t*)(handles.input);
-   int16_t *output_data = (int16_t*)(handles.output);
-
-   memcpy(weights_int16, a, bytes);
-   memcpy(feature_data_int16, b, bytes);
-
-   mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
-   mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
-   int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
-   if(ret < 0) {
-         printf("RKNPU_SUBMIT failed %d\n",ret);
-         release_memhandles(fd, &handles);
-         close(fd);
-         return NULL;
-   }
-   mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_FROM_DEVICE);
-   output_copy = (int16_t*)malloc(bytes);
-   if (!output_copy) {
-      printf("failed to allocate int16 output copy\n");
-      release_memhandles(fd, &handles);
-      close(fd);
-      return NULL;
-   }
-   memcpy(output_copy, output_data, bytes);
-   release_memhandles(fd, &handles);
-   close(fd);
-   return output_copy;
-}
-
-int8_t* int8_alu_op(int8_t* a, int8_t* b, uint32_t alu_algorithm)
-{
-   int fd = getDeviceFd();
-   npu_reset(fd);
-
-   rknn_tensor_type dtype = RKNN_TENSOR_INT8;
-
-   size_t bytes = get_type_size(dtype);
-   struct MemHandles handles = createRegCmd(fd, bytes, bytes, bytes, alu_algorithm);
-   int8_t *output_copy = NULL;
-   if (!handles.input || !handles.weights || !handles.output || !handles.tasks) {
-      release_memhandles(fd, &handles);
-      close(fd);
-      return NULL;
-   }
-   int8_t *weights_int8 = (int8_t*)((char*)handles.weights + REGCMD_RESERVED);
-   int8_t *feature_data_int8 = (int8_t*)(handles.input);
-   int8_t *output_data = (int8_t*)(handles.output);
-
-   memcpy(weights_int8, a, bytes);
-   memcpy(feature_data_int8, b, bytes);
-
-   mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
-   mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
-   int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
-   if(ret < 0) {
-         printf("RKNPU_SUBMIT failed %d\n",ret);
-         release_memhandles(fd, &handles);
-         close(fd);
-         return NULL;
-   }
-   mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_FROM_DEVICE);
-   output_copy = (int8_t*)malloc(bytes);
-   if (!output_copy) {
-      printf("failed to allocate int8 output copy\n");
-      release_memhandles(fd, &handles);
-      close(fd);
-      return NULL;
-   }
-   memcpy(output_copy, output_data, bytes);
    release_memhandles(fd, &handles);
    close(fd);
    return output_copy;
