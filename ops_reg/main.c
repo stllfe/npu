@@ -3454,6 +3454,18 @@ typedef struct {
   int cols;
 } SinTestConfig;
 
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} TanTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} CosTestConfig;
+
 static void load_fixed_silu_inputs(__fp16 *dst, size_t total_elements) {
   static const uint16_t feature_bits[] = {
       0x3240, 0x3ae3, 0x3694, 0x31bf,
@@ -3880,6 +3892,181 @@ static int run_sin_case(const SinTestConfig *config) {
   return matches ? 0 : -1;
 }
 
+static int run_tan_case(const TanTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "tan_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  for (size_t i = 0; i < total_elements; i++) {
+    weights[i] = (__fp16)0;
+    expected[i] = tanhf((float)features[i]);
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 30);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (TANH)", result, rows, cols);
+
+  const float kTanAtol = 1e-2f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kTanAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_cos_case(const CosTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "cos_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  for (size_t i = 0; i < total_elements; i++) {
+    weights[i] = (__fp16)0;
+    expected[i] = cosf((float)features[i]);
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 29);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (COS)", result, rows, cols);
+
+  const float kCosAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kCosAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
 
 
 typedef struct {
@@ -5400,6 +5587,36 @@ int test_sin(int argc, char **argv) {
   return status;
 }
 
+int test_tan(int argc, char **argv) {
+  if (argc >= 3) {
+    TanTestConfig cli_config = {"test_tan_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_tan_case(&cli_config);
+  }
+  static const TanTestConfig configs[] = {
+      {"tan_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_tan_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_cos(int argc, char **argv) {
+  if (argc >= 3) {
+    CosTestConfig cli_config = {"test_cos_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_cos_case(&cli_config);
+  }
+  static const CosTestConfig configs[] = {
+      {"cos_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_cos_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
 static int run_all_tests(void) {
   int status = 0;
   if (test_alu(0, NULL) != 0) status = -1;
@@ -5428,6 +5645,8 @@ static int run_all_tests(void) {
   if (test_minus(0, NULL) != 0) status = -1;
   if (test_sigmoid(0, NULL) != 0) status = -1;
   if (test_sin(0, NULL) != 0) status = -1;
+  if (test_tan(0, NULL) != 0) status = -1;
+  if (test_cos(0, NULL) != 0) status = -1;
   if (test_silu(0, NULL) != 0) status = -1;
   if (test_relu(0, NULL) != 0) status = -1;
   if (test_conv1d(0, NULL) != 0) status = -1;
@@ -5464,6 +5683,8 @@ static int run_named_test(const char *name, int argc, char **argv) {
   if (strcmp(name, "minus") == 0) return test_minus(argc, argv);
   if (strcmp(name, "sigmoid") == 0) return test_sigmoid(argc, argv);
   if (strcmp(name, "sin") == 0) return test_sin(argc, argv);
+  if (strcmp(name, "tan") == 0) return test_tan(argc, argv);
+  if (strcmp(name, "cos") == 0) return test_cos(argc, argv);
   if (strcmp(name, "silu") == 0) return test_silu(argc, argv);
   if (strcmp(name, "relu") == 0) return test_relu(argc, argv);
   if (strcmp(name, "conv1d") == 0) return test_conv1d(argc, argv);
