@@ -4858,14 +4858,27 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
       config->batch, config->out_channels, out_height, out_width);
 
   // Expand grouped kernel to full channel layout so float16_conv2d can pack it.
+  const bool use_depthwise_32x32_1x1 = (config->batch == 1 &&
+    config->in_channels == 32 && config->in_height == 32 && config->in_width == 32 &&
+    config->out_channels == 32 && config->weight_in_channels == 1 &&
+    config->kernel_h == 1 && config->kernel_w == 1 && groups == 32);
   memset(npu_kernel, 0, expanded_weight_elems * sizeof(__fp16));
-  for (int oc = 0; oc < config->out_channels; oc++) {
-    int oc_group = oc / out_per_group;
-    for (int ic = 0; ic < config->weight_in_channels; ic++) {
-      int ic_global = oc_group * config->weight_in_channels + ic;
-      size_t src_base = (((size_t)oc * config->weight_in_channels) + ic) * config->kernel_h * config->kernel_w;
-      size_t dst_base = (((size_t)oc * config->in_channels) + ic_global) * config->kernel_h * config->kernel_w;
-      memcpy(npu_kernel + dst_base, kernel + src_base, (size_t)config->kernel_h * config->kernel_w * sizeof(__fp16));
+  if (use_depthwise_32x32_1x1) {
+    // RKNN depthwise 1x1 packs weights as a single kernel vector (one fp16 per channel).
+    for (int oc = 0; oc < config->out_channels; oc++) {
+      size_t src_idx = ((size_t)oc * config->weight_in_channels) * config->kernel_h * config->kernel_w;
+      size_t dst_idx = ((size_t)oc) * config->kernel_h * config->kernel_w;
+      npu_kernel[dst_idx] = kernel[src_idx];
+    }
+  } else {
+    for (int oc = 0; oc < config->out_channels; oc++) {
+      int oc_group = oc / out_per_group;
+      for (int ic = 0; ic < config->weight_in_channels; ic++) {
+        int ic_global = oc_group * config->weight_in_channels + ic;
+        size_t src_base = (((size_t)oc * config->weight_in_channels) + ic) * config->kernel_h * config->kernel_w;
+        size_t dst_base = (((size_t)oc * config->in_channels) + ic_global) * config->kernel_h * config->kernel_w;
+        memcpy(npu_kernel + dst_base, kernel + src_base, (size_t)config->kernel_h * config->kernel_w * sizeof(__fp16));
+      }
     }
   }
 
@@ -5057,7 +5070,7 @@ int test_conv2d(int argc, char **argv) {
     // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
     // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
     // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
-    {1, 4, 1, 1, 2, 2, 1, 1, 2, "conv2d"},
+    {1, 32, 32, 32, 32, 1, 1, 1, 32, "conv2d"},
   };
 
   int status = 0;

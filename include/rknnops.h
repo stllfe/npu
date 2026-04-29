@@ -1082,7 +1082,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          if (!( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3) &&
             !( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
-               conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1)) {
+               conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1) &&
+            !( conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
+               conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) 
+            ) {
             argb_in = 10;
             if (( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
                conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==1 && conv_kernel_w==1) || ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
@@ -1101,6 +1104,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int line_stride = 0;
          int cvt_con0 = CNA_CVT_CON0_CVT_BYPASS(1) ;
          int cv5_con5 = 0x00000fff;
+         int weight_kernels = 0 ;
+         int core_misc_cfg = CORE_MISC_CFG_PROC_PRECISION(2);
          if (( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
             feature_grains = 21;
@@ -1160,8 +1165,22 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             line_stride = 8;
             surf_stride = 0;
             cv5_con5 = 0x0000ffff;
-            // out_width_stride = 16;
-            // surface_add = 32;
+         }
+         else if (  conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
+            conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) {
+            conv_con1 |= CNA_CONV_CON1_CONV_MODE(3);
+            feature_grains = 32;
+            data_in_channel_aligned = 32;
+            weight_bytes_total = 0x40;
+            weight_kernels = 1;
+            cbuf_entries = 32;
+            line_stride = 128;
+            surf_stride = 896;
+            align_c = 32;
+            cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
+            core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
+            cv5_con5 = 0;
+            surface_add = 4096;
          }
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_CNA_CONV_CON1, conv_con1);
@@ -1173,11 +1192,16 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_CNA_DATA_SIZE3, CNA_DATA_SIZE3_DATAOUT_ATOMICS(dataout_atomics));
          EMIT(REG_CNA_WEIGHT_SIZE0, weight_bytes_total);
          EMIT(REG_CNA_WEIGHT_SIZE1, CNA_WEIGHT_SIZE1_WEIGHT_BYTES_PER_KERNEL(weight_bytes_per_kernel));
-         EMIT(REG_CNA_WEIGHT_SIZE2, CNA_WEIGHT_SIZE2_WEIGHT_WIDTH(conv_kernel_w) | CNA_WEIGHT_SIZE2_WEIGHT_HEIGHT(conv_kernel_h) | CNA_WEIGHT_SIZE2_WEIGHT_KERNELS(conv_out_channels));
+         if (weight_kernels == 0) weight_kernels = conv_out_channels;
+         EMIT(REG_CNA_WEIGHT_SIZE2, CNA_WEIGHT_SIZE2_WEIGHT_WIDTH(conv_kernel_w) | CNA_WEIGHT_SIZE2_WEIGHT_HEIGHT(conv_kernel_h) | CNA_WEIGHT_SIZE2_WEIGHT_KERNELS(weight_kernels));
 
          data_bank = (cbuf_entries + 1023) / 1024;
          if (data_bank < 1) data_bank = 1;
          if (data_bank > NPU_CBUF_BANKS-1) data_bank = NPU_CBUF_BANKS-1;
+         if (  conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
+            conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) {
+               data_bank = 2 ;
+         };
          EMIT(REG_CNA_CBUF_CON0, CNA_CBUF_CON0_WEIGHT_BANK(NPU_CBUF_BANKS - data_bank) | CNA_CBUF_CON0_DATA_BANK(data_bank));
          EMIT(REG_CNA_CBUF_CON1, CNA_CBUF_CON1_DATA_ENTRIES(cbuf_entries));
          EMIT(REG_CNA_CVT_CON0, cvt_con0);
@@ -1193,11 +1217,16 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_CNA_FC_DATA_SIZE1, CNA_FC_DATA_SIZE1_DMA_CHANNEL(align_c));
          EMIT(REG_CNA_DCOMP_ADDR0, CNA_DCOMP_ADDR0_DECOMPRESS_ADDR0(weights_dma + REGCMD_RESERVED));
          EMIT(REG_CNA_CVT_CON5, cv5_con5);
-         EMIT(REG_CORE_MISC_CFG, CORE_MISC_CFG_PROC_PRECISION(2));
+         EMIT(REG_CORE_MISC_CFG, core_misc_cfg);
          EMIT(REG_CORE_DATAOUT_SIZE_0, CORE_DATAOUT_SIZE_0_DATAOUT_HEIGHT(out_h - 1) | CORE_DATAOUT_SIZE_0_DATAOUT_WIDTH(out_w - 1));
          EMIT(REG_CORE_DATAOUT_SIZE_1, CORE_DATAOUT_SIZE_1_DATAOUT_CHANNEL(out_channel_field));
          emit_raw(&regs, CORE | 0x1, 0x3030, 0);
-         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2));
+         int feature_mode_cfg = DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2);
+         if (  conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
+            conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) {
+               feature_mode_cfg |= DPU_FEATURE_MODE_CFG_CONV_MODE(3) ;
+         }
+         EMIT(REG_DPU_FEATURE_MODE_CFG, feature_mode_cfg);
          EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
          EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
          EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(out_width_stride));
@@ -1205,7 +1234,14 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT(out_h - 1));
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(orig_channel) | DPU_DATA_CUBE_CHANNEL_CHANNEL(out_channel_field));
          EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
-         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         int ow_cfg_size_e_0 = 1;
+         int ow_cfg_size_e_1 = 1;
+         int ow_cfg_size_e_2 = 1;
+         if (  conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
+            conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) {
+            ow_cfg_size_e_0 = 3; ow_cfg_size_e_1 = 3; ow_cfg_size_e_2 = 3;       
+         }
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(ow_cfg_size_e_2) | DPU_BS_OW_CFG_SIZE_E_1(ow_cfg_size_e_1) | DPU_BS_OW_CFG_SIZE_E_0(ow_cfg_size_e_0) | DPU_BS_OW_CFG_OD_BYPASS(1));
          EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(out_channel_field));
          EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA(out_h - 1) | DPU_WDMA_SIZE_1_WIDTH_WDMA(out_w - 1));
          EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));

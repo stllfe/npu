@@ -679,9 +679,9 @@ int main(int argc, char** argv) {
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d input shape (1, 3, 5, 7), weight shape (6, 3, 3, 5)"},
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d"},
     make_conv2d_case_nchw_weight(
-        "conv2d_i1411_w2211_g2",
-        1, 4, 1, 1,
-        2, 2, 1, 1,
+        "conv2d_i1323232_w32111_g32",
+        1, 32, 32, 32,
+        32, 1, 1, 1,
         "conv2d"),
     };
   }
