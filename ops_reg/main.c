@@ -5,6 +5,7 @@
 #include <math.h>
 #include <string.h>
 #include "rknnops.h"
+#include "main.h"
 
 static int init_fp16_matrix_case(const char *name, int rows_in, int cols_in,
     int *rows, int *cols, size_t *total_elements, int *size,
@@ -228,11 +229,6 @@ static int load_conv1d_fixtures(const char *fixture_dir,
   }
   return 0;
 }
-
-typedef struct {
-  uint32_t mt[624];
-  int index;
-} Mt19937;
 
 static void mt_seed(Mt19937 *rng, uint32_t seed) {
   rng->mt[0] = seed;
@@ -532,92 +528,6 @@ int test_alu(int argc, char **argv) {
     free(b);
     return 0;
 }
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} DivTestConfig;
-
-	typedef struct {
-	  const char *name;
-	  int rows;
-	  int cols;
-	  int a_broadcast_cols;
-	  int b_broadcast_cols;
-	} CmpltTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} CmpeqTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} MinusTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} NegTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AbsTestConfig;
-
-			typedef struct {
-			  const char *name;
-			  int rows;
-			  int cols;
-			} AddTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} MulTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} WhereTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} RounddownTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} RoundoffTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} MaxpoolTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AvgpoolTestConfig;
-
-		typedef struct {
-		  const char *name;
-		  int rows;
-		  int cols;
-		} MaxTestConfig;
 
 static float roundoff_ref(float in_val);
 
@@ -3336,12 +3246,6 @@ int test_max(int argc, char **argv) {
 }
 
 
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} ReluTestConfig;
-
 static int run_relu_case(const ReluTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "relu_case";
@@ -3415,98 +3319,6 @@ static int run_relu_case(const ReluTestConfig *config) {
   free(weights);
   return matches ? 0 : -1;
 }
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} SiluTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} SigmoidTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} SinTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} TanTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} CosTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AsinTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AcosTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AtanTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AsinhTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AcoshTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} TanhTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} SinhTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} CoshTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} AtanhTestConfig;
-
-typedef struct {
-  const char *name;
-  int rows;
-  int cols;
-} LutTestConfig;
-
-typedef float (*LutRefFn)(float);
 
 static void load_fixed_silu_inputs(__fp16 *dst, size_t total_elements) {
   static const uint16_t feature_bits[] = {
@@ -5174,13 +4986,6 @@ static int run_atanh_case(const AtanhTestConfig *config) {
 }
 
 
-typedef struct {
-  const char *name;
-  int M;
-  int K;
-  int N;
-} MatmulTestConfig;
-
 static int should_print_matmul(const MatmulTestConfig *config) {
   return 0;
 }
@@ -5857,18 +5662,6 @@ int test_matmul(int argc, char **argv) {
   return status;
 }
 
-typedef struct {
-  const char *name;
-  int batch;
-  int in_channels;
-  int input_size;
-  int out_channels;
-  int weight_in_channels;
-  int kernel_size;
-  int groups;
-  const char *fixture_dir;
-} Conv1dTestConfig;
-
 static int run_conv1d_case(const Conv1dTestConfig *config) {
   if (!config) return -1;
   if (config->weight_in_channels <= 0) {
@@ -6154,19 +5947,6 @@ int test_conv1d(int argc, char **argv) {
   }
   return status;
 }
-
-typedef struct {
-  int batch;
-  int in_channels;
-  int in_height;
-  int in_width;
-  int out_channels;
-  int weight_in_channels;
-  int kernel_h;
-  int kernel_w;
-  int groups;
-  const char *name;
-} Conv2dTestConfig;
 
 static int run_conv2d_exec(const Conv2dTestConfig *config, const __fp16 *input,
     __fp16 *npu_kernel, size_t input_elems, size_t expanded_weight_elems,
@@ -7287,34 +7067,6 @@ int main(int argc, char **argv) {
     printf("Unknown test '%s'\n", argv[1]);
     return -1;
   }
-
-  // test_max(argc, argv);
-  // test_div(argc, argv);
-  // test_cmple(argc, argv);
-  // test_cmpgt(argc, argv);
-  // test_cmpge(argc, argv);
-  // test_mul(argc, argv);
-  // test_rounddown(argc, argv);
-  // test_roundoff(argc, argv);
-  // test_abs(argc, argv);
-  // test_where(argc, argv);
-  // test_cmplt(argc, argv);
-  // test_cmpneq(argc, argv);
-  // test_neg(argc, argv);
-  // test_cmpeq(argc, argv);
-  // test_add(argc, argv);
-  // test_minus(argc, argv);
-  // test_sigmoid(argc, argv);
-  // test_silu(argc, argv);
-  // test_relu(argc, argv);
-  // test_conv1d(argc, argv);
   test_conv2d(argc, argv);
-  // test_matmul(argc, argv);
-  // test_maxpool(argc, argv);
-  // test_minpool(argc, argv);
-  // test_avgpool(argc, argv);
-  // test_globalmaxpool(argc, argv);
-  // test_globalminpool(argc, argv);
-  // test_globalavgpool(argc, argv);
   return 0;
 }
