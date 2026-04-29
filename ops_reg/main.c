@@ -3466,6 +3466,48 @@ typedef struct {
   int cols;
 } CosTestConfig;
 
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} AsinTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} AcosTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} AtanTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} AsinhTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} AcoshTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} TanhTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} AtanhTestConfig;
+
 static void load_fixed_silu_inputs(__fp16 *dst, size_t total_elements) {
   static const uint16_t feature_bits[] = {
       0x3240, 0x3ae3, 0x3694, 0x31bf,
@@ -3478,6 +3520,38 @@ static void load_fixed_silu_inputs(__fp16 *dst, size_t total_elements) {
   for (size_t i = 0; i < total_elements; i++) {
     uint16_t bits = feature_bits[i];
     memcpy(&dst[i], &bits, sizeof(uint16_t));
+  }
+}
+
+static void load_fixed_asin_inputs(__fp16 *dst, size_t total_elements) {
+  if (!dst || total_elements == 0) return;
+  const float low = -0.95f;
+  const float high = 0.95f;
+  if (total_elements == 1) {
+    dst[0] = (__fp16)0.0f;
+    return;
+  }
+  const float range = high - low;
+  for (size_t i = 0; i < total_elements; i++) {
+    float t = (float)i / (float)(total_elements - 1);
+    float x = low + range * t;
+    dst[i] = (__fp16)x;
+  }
+}
+
+static void load_fixed_acosh_inputs(__fp16 *dst, size_t total_elements) {
+  if (!dst || total_elements == 0) return;
+  const float low = 1.0f;
+  const float high = 3.0f;
+  if (total_elements == 1) {
+    dst[0] = (__fp16)low;
+    return;
+  }
+  const float range = high - low;
+  for (size_t i = 0; i < total_elements; i++) {
+    float t = (float)i / (float)(total_elements - 1);
+    float x = low + range * t;
+    dst[i] = (__fp16)x;
   }
 }
 
@@ -4055,6 +4129,634 @@ static int run_cos_case(const CosTestConfig *config) {
     float diff = fabsf(actual - expected[i]);
     if (diff > max_abs_diff) max_abs_diff = diff;
     if (diff > kCosAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_asin_case(const AsinTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "asin_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_asin_inputs(features, total_elements);
+  const float inv_half_pi = 0.63661977236f;
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = asinf(x) * inv_half_pi;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 32);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (ASIN)", result, rows, cols);
+
+  const float kAsinAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kAsinAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_acos_case(const AcosTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "acos_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_asin_inputs(features, total_elements);
+  const float inv_pi = 0.31830988618f;
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = (2.0f * acosf(x) * inv_pi) - 1.0f;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 33);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (ACOS)", result, rows, cols);
+
+  const float kAcosAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kAcosAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_atan_case(const AtanTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "atan_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  const float inv_half_pi = 0.63661977236f;
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = atanf(x) * inv_half_pi;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 34);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (ATAN)", result, rows, cols);
+
+  const float kAtanAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kAtanAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_asinh_case(const AsinhTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "asinh_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  const float inv_asinh_max = 0.26283636686f;
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = asinhf(x) * inv_asinh_max;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 35);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (ASINH)", result, rows, cols);
+
+  const float kAsinhAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kAsinhAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_acosh_case(const AcoshTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "acosh_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_acosh_inputs(features, total_elements);
+  const float inv_acosh_max = 0.24046329466f;
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = acoshf(x) * inv_acosh_max;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 36);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (ACOSH)", result, rows, cols);
+
+  const float kAcoshAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kAcoshAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_tanh_case(const TanhTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "tanh_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  for (size_t i = 0; i < total_elements; i++) {
+    weights[i] = (__fp16)0;
+    expected[i] = tanhf((float)features[i]);
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 31);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (TANH)", result, rows, cols);
+
+  const float kTanhAtol = 1e-2f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kTanhAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_atanh_case(const AtanhTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "atanh_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_asin_inputs(features, total_elements);
+  const float inv_atanh_max = 0.26314396422f;
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = atanhf(x) * inv_atanh_max;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 37);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (ATANH)", result, rows, cols);
+
+  const float kAtanhAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kAtanhAtol) matches = 0;
   }
 
   printf("%s: matches CPU -> %s (max diff=%.6f)\n",
@@ -5617,6 +6319,111 @@ int test_cos(int argc, char **argv) {
   return status;
 }
 
+int test_asin(int argc, char **argv) {
+  if (argc >= 3) {
+    AsinTestConfig cli_config = {"test_asin_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_asin_case(&cli_config);
+  }
+  static const AsinTestConfig configs[] = {
+      {"asin_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_asin_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_acos(int argc, char **argv) {
+  if (argc >= 3) {
+    AcosTestConfig cli_config = {"test_acos_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_acos_case(&cli_config);
+  }
+  static const AcosTestConfig configs[] = {
+      {"acos_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_acos_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_atan(int argc, char **argv) {
+  if (argc >= 3) {
+    AtanTestConfig cli_config = {"test_atan_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_atan_case(&cli_config);
+  }
+  static const AtanTestConfig configs[] = {
+      {"atan_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_atan_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_asinh(int argc, char **argv) {
+  if (argc >= 3) {
+    AsinhTestConfig cli_config = {"test_asinh_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_asinh_case(&cli_config);
+  }
+  static const AsinhTestConfig configs[] = {
+      {"asinh_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_asinh_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_acosh(int argc, char **argv) {
+  if (argc >= 3) {
+    AcoshTestConfig cli_config = {"test_acosh_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_acosh_case(&cli_config);
+  }
+  static const AcoshTestConfig configs[] = {
+      {"acosh_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_acosh_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_tanh(int argc, char **argv) {
+  if (argc >= 3) {
+    TanhTestConfig cli_config = {"test_tanh_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_tanh_case(&cli_config);
+  }
+  static const TanhTestConfig configs[] = {
+      {"tanh_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_tanh_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_atanh(int argc, char **argv) {
+  if (argc >= 3) {
+    AtanhTestConfig cli_config = {"test_atanh_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_atanh_case(&cli_config);
+  }
+  static const AtanhTestConfig configs[] = {
+      {"atanh_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_atanh_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
 static int run_all_tests(void) {
   int status = 0;
   if (test_alu(0, NULL) != 0) status = -1;
@@ -5647,6 +6454,13 @@ static int run_all_tests(void) {
   if (test_sin(0, NULL) != 0) status = -1;
   if (test_tan(0, NULL) != 0) status = -1;
   if (test_cos(0, NULL) != 0) status = -1;
+  if (test_asin(0, NULL) != 0) status = -1;
+  if (test_acos(0, NULL) != 0) status = -1;
+  if (test_atan(0, NULL) != 0) status = -1;
+  if (test_asinh(0, NULL) != 0) status = -1;
+  if (test_acosh(0, NULL) != 0) status = -1;
+  if (test_tanh(0, NULL) != 0) status = -1;
+  if (test_atanh(0, NULL) != 0) status = -1;
   if (test_silu(0, NULL) != 0) status = -1;
   if (test_relu(0, NULL) != 0) status = -1;
   if (test_conv1d(0, NULL) != 0) status = -1;
@@ -5685,6 +6499,13 @@ static int run_named_test(const char *name, int argc, char **argv) {
   if (strcmp(name, "sin") == 0) return test_sin(argc, argv);
   if (strcmp(name, "tan") == 0) return test_tan(argc, argv);
   if (strcmp(name, "cos") == 0) return test_cos(argc, argv);
+  if (strcmp(name, "asin") == 0) return test_asin(argc, argv);
+  if (strcmp(name, "acos") == 0) return test_acos(argc, argv);
+  if (strcmp(name, "atan") == 0) return test_atan(argc, argv);
+  if (strcmp(name, "asinh") == 0) return test_asinh(argc, argv);
+  if (strcmp(name, "acosh") == 0) return test_acosh(argc, argv);
+  if (strcmp(name, "tanh") == 0) return test_tanh(argc, argv);
+  if (strcmp(name, "atanh") == 0) return test_atanh(argc, argv);
   if (strcmp(name, "silu") == 0) return test_silu(argc, argv);
   if (strcmp(name, "relu") == 0) return test_relu(argc, argv);
   if (strcmp(name, "conv1d") == 0) return test_conv1d(argc, argv);

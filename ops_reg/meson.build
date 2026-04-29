@@ -112,8 +112,15 @@ endforeach
 lut_cases = [
   ['sigmoid'],
   ['sin'],
-  ['tan'],
   ['cos'],
+  ['tan'],
+  ['tanh'],
+  ['asin'],
+  ['acos'],
+  ['atan'],
+  ['asinh'],
+  ['acosh'],
+  ['atanh'],
   ['silu'],
 ]
 
