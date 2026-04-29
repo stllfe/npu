@@ -3448,6 +3448,12 @@ typedef struct {
   int cols;
 } SigmoidTestConfig;
 
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} SinTestConfig;
+
 static void load_fixed_silu_inputs(__fp16 *dst, size_t total_elements) {
   static const uint16_t feature_bits[] = {
       0x3240, 0x3ae3, 0x3694, 0x31bf,
@@ -3589,10 +3595,19 @@ static int run_silu_case(const SiluTestConfig *config) {
     free(sigmoid_ref);
     return -1;
   }
-  const size_t stride_fp32 = 0x10 / sizeof(float);  // 4
   const float *stage1_padded_fp32 = (const float *)stage1_padded;
+  const __fp16 *stage1_padded_fp16 = (const __fp16 *)stage1_padded;
+  const float fp32_probe = stage1_padded_fp32[0];
+  const float fp16_probe = (float)stage1_padded_fp16[0];
+  const bool use_fp16_stage1 = (fabsf(fp32_probe) < 1e-6f && fabsf(fp16_probe) > 1e-6f);
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const size_t stride_fp16 = 0x10 / sizeof(__fp16);
   for (size_t i = 0; i < total_elements; i++) {
-    stage1_fp32[i] = stage1_padded_fp32[i * stride_fp32];
+    if (use_fp16_stage1) {
+      stage1_fp32[i] = (float)stage1_padded_fp16[i * stride_fp16];
+    } else {
+      stage1_fp32[i] = stage1_padded_fp32[i * stride_fp32];
+    }
   }
 
   __fp16 *stage1_fp16 = (__fp16 *)malloc(total_elements * sizeof(__fp16));
@@ -3764,6 +3779,94 @@ static int run_sigmoid_case(const SigmoidTestConfig *config) {
     float diff = fabsf(actual - expected[i]);
     if (diff > max_abs_diff) max_abs_diff = diff;
     if (diff > kSigmoidAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_sin_case(const SinTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "sin_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  for (size_t i = 0; i < total_elements; i++) {
+    weights[i] = (__fp16)0;
+    expected[i] = sinf((float)features[i]);
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 28);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (SIN)", result, rows, cols);
+
+  const float kSinAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kSinAtol) matches = 0;
   }
 
   printf("%s: matches CPU -> %s (max diff=%.6f)\n",
@@ -5282,6 +5385,21 @@ int test_sigmoid(int argc, char **argv) {
   return status;
 }
 
+int test_sin(int argc, char **argv) {
+  if (argc >= 3) {
+    SinTestConfig cli_config = {"test_sin_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_sin_case(&cli_config);
+  }
+  static const SinTestConfig configs[] = {
+      {"sin_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_sin_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
 static int run_all_tests(void) {
   int status = 0;
   if (test_alu(0, NULL) != 0) status = -1;
@@ -5309,6 +5427,7 @@ static int run_all_tests(void) {
   if (test_neg(0, NULL) != 0) status = -1;
   if (test_minus(0, NULL) != 0) status = -1;
   if (test_sigmoid(0, NULL) != 0) status = -1;
+  if (test_sin(0, NULL) != 0) status = -1;
   if (test_silu(0, NULL) != 0) status = -1;
   if (test_relu(0, NULL) != 0) status = -1;
   if (test_conv1d(0, NULL) != 0) status = -1;
@@ -5344,6 +5463,7 @@ static int run_named_test(const char *name, int argc, char **argv) {
   if (strcmp(name, "neg") == 0) return test_neg(argc, argv);
   if (strcmp(name, "minus") == 0) return test_minus(argc, argv);
   if (strcmp(name, "sigmoid") == 0) return test_sigmoid(argc, argv);
+  if (strcmp(name, "sin") == 0) return test_sin(argc, argv);
   if (strcmp(name, "silu") == 0) return test_silu(argc, argv);
   if (strcmp(name, "relu") == 0) return test_relu(argc, argv);
   if (strcmp(name, "conv1d") == 0) return test_conv1d(argc, argv);
