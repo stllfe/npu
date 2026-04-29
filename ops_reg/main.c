@@ -492,8 +492,7 @@ static int run_div_case(const DivTestConfig *config) {
   __fp16 *unpacked_fp16 = (__fp16*)malloc((size_t)size * sizeof(__fp16));
   if (!unpacked_fp16) {
     printf("%s: failed to allocate output buffer\n", name);
-    free(a);
-    free(b);
+    free(a); free(b);
     return -1;
   }
 
@@ -501,9 +500,7 @@ static int run_div_case(const DivTestConfig *config) {
   __fp16 *result = float16_alu_op(a, b, 3, size);
   if (!result) {
     printf("%s: float16_alu_op failed\n", name);
-    free(unpacked_fp16);
-    free(a);
-    free(b);
+    free(unpacked_fp16); free(a); free(b);
     return -1;
   }
   const size_t stride_fp16 = 0x10 / sizeof(__fp16);
@@ -541,9 +538,7 @@ static int run_div_case(const DivTestConfig *config) {
   printf("%s: matches CPU -> %s\n", name, (matches_fp16 || matches_fp32) ? "YES" : "NO");
 
   breakpoint();
-  free(unpacked_fp16);
-  free(a);
-  free(b);
+  free(unpacked_fp16); free(a); free(b);
   return (matches_fp16 || matches_fp32) ? 0 : -1;
 }
 
@@ -756,8 +751,7 @@ static int run_pool_case(const MaxpoolTestConfig *config, const char *pool_label
   __fp16 *expected = (__fp16*)malloc(out_elems * sizeof(__fp16));
   if (!expected) {
     printf("%s: failed to allocate CPU reference buffers\n", name);
-    free(expected);
-    free(output_view);
+    free(expected); free(output_view);
     free(weights); free(input); free(stage1); free(unpacked);
     return -1;
   }
@@ -871,8 +865,7 @@ static int run_globalmaxpool_case(const MaxpoolTestConfig *config) {
   __fp16 *expected = (__fp16*)malloc(sizeof(__fp16));
   if (!expected) {
     printf("%s: failed to allocate CPU reference buffers\n", name);
-    free(expected);
-    free(output_view);
+    free(expected); free(output_view);
     free(weights); free(input); free(stage1); free(unpacked);
     return -1;
   }
@@ -983,8 +976,7 @@ static int run_globalminpool_case(const MaxpoolTestConfig *config) {
   __fp16 *expected = (__fp16*)malloc(sizeof(__fp16));
   if (!expected) {
     printf("%s: failed to allocate CPU reference buffers\n", name);
-    free(expected);
-    free(output_view);
+    free(expected); free(output_view);
     free(weights); free(input); free(stage1); free(unpacked);
     return -1;
   }
@@ -1073,8 +1065,7 @@ static int run_avgpool_case(const AvgpoolTestConfig *config) {
   __fp16 *expected = (__fp16*)malloc(out_elems * sizeof(__fp16));
   if (!expected) {
     printf("%s: failed to allocate CPU reference buffers\n", name);
-    free(expected);
-    free(output_view);
+    free(expected); free(output_view);
     free(weights); free(input); free(stage1); free(unpacked);
     return -1;
   }
@@ -1246,10 +1237,7 @@ static int run_cmplt_case(const CmpltTestConfig *config) {
   __fp16 *zeros = (__fp16*)calloc(total_elements, sizeof(__fp16));
   if (!diff || !intermediate || !zeros) {
     printf("%s: failed to allocate cmplt buffers\n", name);
-    free(diff);
-    free(intermediate);
-    free(zeros);
-    free(diff_packed);
+    free(diff); free(intermediate); free(zeros); free(diff_packed);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1265,9 +1253,7 @@ static int run_cmplt_case(const CmpltTestConfig *config) {
 		  __fp16 *result_packed = float16_alu_op(zeros, diff, 16, size);
 		  if (!result_packed) {
 		    printf("%s: float16_alu_op cmplt_cmp failed\n", name);
-		    free(diff);
-		    free(intermediate);
-		    free(zeros);
+		    free(diff); free(intermediate); free(zeros);
 		    free(a); free(b); free(unpacked);
 		    return -1;
 		  }
@@ -1281,12 +1267,7 @@ static int run_cmplt_case(const CmpltTestConfig *config) {
   __fp16 *actual_bool_fp16 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   if (!expected_ab_fp16 || !expected_ba_fp16) {
     printf("%s: failed to allocate expected buffers\n", name);
-    free(expected_ab_fp16);
-    free(expected_ba_fp16);
-    free(actual_bool_fp16);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1327,12 +1308,7 @@ static int run_cmplt_case(const CmpltTestConfig *config) {
   }
 
   breakpoint();
-  free(diff);
-  free(intermediate);
-  free(zeros);
-  free(expected_ab_fp16);
-  free(expected_ba_fp16);
-  free(actual_bool_fp16);
+  free(diff); free(intermediate); free(zeros); free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16);
   free(a); free(b); free(unpacked);
   return (matches_ab || matches_ba) ? 0 : -1;
 }
@@ -1399,10 +1375,7 @@ static int run_cmpgt_case(const CmpltTestConfig *config) {
   __fp16 *zeros = (__fp16*)calloc(total_elements, sizeof(__fp16));
   if (!diff || !intermediate || !zeros) {
     printf("%s: failed to allocate cmpgt buffers\n", name);
-    free(diff);
-    free(intermediate);
-    free(zeros);
-    free(diff_packed);
+    free(diff); free(intermediate); free(zeros); free(diff_packed);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1418,9 +1391,7 @@ static int run_cmpgt_case(const CmpltTestConfig *config) {
   __fp16 *result_packed = float16_alu_op(zeros, diff, 16, size);
   if (!result_packed) {
     printf("%s: float16_alu_op cmpgt_cmp failed\n", name);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1434,12 +1405,7 @@ static int run_cmpgt_case(const CmpltTestConfig *config) {
   __fp16 *actual_bool_fp16 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   if (!expected_ab_fp16 || !expected_ba_fp16) {
     printf("%s: failed to allocate expected buffers\n", name);
-    free(expected_ab_fp16);
-    free(expected_ba_fp16);
-    free(actual_bool_fp16);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1480,12 +1446,7 @@ static int run_cmpgt_case(const CmpltTestConfig *config) {
   }
 
   breakpoint();
-  free(diff);
-  free(intermediate);
-  free(zeros);
-  free(expected_ab_fp16);
-  free(expected_ba_fp16);
-  free(actual_bool_fp16);
+  free(diff); free(intermediate); free(zeros); free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16);
   free(a); free(b); free(unpacked);
   return (matches_ab || matches_ba) ? 0 : -1;
 }
@@ -1553,10 +1514,7 @@ static int run_cmpge_case(const CmpltTestConfig *config) {
   __fp16 *zeros = (__fp16*)calloc(total_elements, sizeof(__fp16));
   if (!diff || !intermediate || !zeros) {
     printf("%s: failed to allocate cmpge buffers\n", name);
-    free(diff);
-    free(intermediate);
-    free(zeros);
-    free(diff_packed);
+    free(diff); free(intermediate); free(zeros); free(diff_packed);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1570,9 +1528,7 @@ static int run_cmpge_case(const CmpltTestConfig *config) {
   __fp16 *result_packed = float16_alu_op(zeros, diff, 20, size);
   if (!result_packed) {
     printf("%s: float16_alu_op cmpge_cmp failed\n", name);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1586,12 +1542,7 @@ static int run_cmpge_case(const CmpltTestConfig *config) {
   __fp16 *actual_bool_fp16 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   if (!expected_ab_fp16 || !expected_ba_fp16) {
     printf("%s: failed to allocate expected buffers\n", name);
-    free(expected_ab_fp16);
-    free(expected_ba_fp16);
-    free(actual_bool_fp16);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1632,12 +1583,7 @@ static int run_cmpge_case(const CmpltTestConfig *config) {
   }
 
   breakpoint();
-  free(diff);
-  free(intermediate);
-  free(zeros);
-  free(expected_ab_fp16);
-  free(expected_ba_fp16);
-  free(actual_bool_fp16);
+  free(diff); free(intermediate); free(zeros); free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16);
   free(a); free(b); free(unpacked);
   return (matches_ab || matches_ba) ? 0 : -1;
 }
@@ -1705,10 +1651,7 @@ static int run_cmple_case(const CmpltTestConfig *config) {
   __fp16 *zeros = (__fp16*)calloc(total_elements, sizeof(__fp16));
   if (!diff || !intermediate || !zeros) {
     printf("%s: failed to allocate cmple buffers\n", name);
-    free(diff);
-    free(intermediate);
-    free(zeros);
-    free(diff_packed);
+    free(diff); free(intermediate); free(zeros); free(diff_packed);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1722,9 +1665,7 @@ static int run_cmple_case(const CmpltTestConfig *config) {
 			  __fp16 *result_packed = float16_alu_op(zeros, diff, 20, size);
 			  if (!result_packed) {
 			    printf("%s: float16_alu_op cmple_cmp failed\n", name);
-			    free(diff);
-			    free(intermediate);
-			    free(zeros);
+			    free(diff); free(intermediate); free(zeros);
 			    free(a); free(b); free(unpacked);
 			    return -1;
 			  }
@@ -1738,12 +1679,7 @@ static int run_cmple_case(const CmpltTestConfig *config) {
   __fp16 *actual_bool_fp16 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   if (!expected_ab_fp16 || !expected_ba_fp16) {
     printf("%s: failed to allocate expected buffers\n", name);
-    free(expected_ab_fp16);
-    free(expected_ba_fp16);
-    free(actual_bool_fp16);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1784,12 +1720,7 @@ static int run_cmple_case(const CmpltTestConfig *config) {
   }
 
   breakpoint();
-  free(diff);
-  free(intermediate);
-  free(zeros);
-  free(expected_ab_fp16);
-  free(expected_ba_fp16);
-  free(actual_bool_fp16);
+  free(diff); free(intermediate); free(zeros); free(expected_ab_fp16); free(expected_ba_fp16); free(actual_bool_fp16);
   free(a); free(b); free(unpacked);
   return (matches_ab || matches_ba) ? 0 : -1;
 }
@@ -1832,10 +1763,7 @@ static int run_cmpeq_case(const CmpeqTestConfig *config) {
   __fp16 *zeros = (__fp16*)calloc(total_elements, sizeof(__fp16));
   if (!ones || !diff || !intermediate || !zeros) {
     printf("%s: failed to allocate cmpeq buffers\n", name);
-    free(ones);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(ones); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1844,10 +1772,7 @@ static int run_cmpeq_case(const CmpeqTestConfig *config) {
   __fp16 *stage1_packed = float16_alu_op(a, b, 4, size);
   if (!stage1_packed) {
     printf("%s: float16_alu_op cmpeq_stage1 failed\n", name);
-    free(ones);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(ones); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1863,10 +1788,7 @@ static int run_cmpeq_case(const CmpeqTestConfig *config) {
   __fp16 *stage2_packed = float16_alu_op(zeros, diff, 17, size);
   if (!stage2_packed) {
     printf("%s: float16_alu_op cmpeq_stage2 failed\n", name);
-    free(ones);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(ones); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1882,10 +1804,7 @@ static int run_cmpeq_case(const CmpeqTestConfig *config) {
   __fp16 *result_packed = float16_alu_op(zeros, diff, 18, size);
   if (!result_packed) {
     printf("%s: float16_alu_op cmpeq_stage3 failed\n", name);
-    free(ones);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(ones); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1897,10 +1816,7 @@ static int run_cmpeq_case(const CmpeqTestConfig *config) {
   __fp16 *expected_fp16 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   if (!expected_fp16) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(ones);
-    free(diff);
-    free(intermediate);
-    free(zeros);
+    free(ones); free(diff); free(intermediate); free(zeros);
     free(a); free(b); free(unpacked);
     return -1;
   }
@@ -1943,10 +1859,7 @@ static int run_cmpeq_case(const CmpeqTestConfig *config) {
     }
 
 	  breakpoint();
-	  free(expected_fp16);
-	  free(ones);
-	  free(diff);
-	  free(intermediate);
+	  free(expected_fp16); free(ones); free(diff); free(intermediate);
   free(zeros);
   free(a); free(b); free(unpacked);
   return matches ? 0 : -1;
@@ -3202,17 +3115,14 @@ static int run_relu_case(const ReluTestConfig *config) {
   __fp16 *result = float16_alu_op(weights, features, 10, size);
   if (result == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
 
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
   if (!unpacked) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result);
-    free(features);
-    free(weights);
+    free(result); free(features); free(weights);
     return -1;
   }
 
@@ -3243,9 +3153,7 @@ static int run_relu_case(const ReluTestConfig *config) {
       name, matches ? "YES" : "NO", max_abs_diff);
   
   breakpoint();
-  free(unpacked);
-  free(features);
-  free(weights);
+  free(unpacked); free(features); free(weights);
   return matches ? 0 : -1;
 }
 
@@ -3381,8 +3289,7 @@ static int init_fp16_matrix_case_impl(const char *name, int rows_in, int cols_in
   __fp16 *wts = (__fp16 *)malloc(total * sizeof(__fp16));
   if (!feat || !wts) {
     printf("%s: failed to allocate %zu elements\n", name, total);
-    free(feat);
-    free(wts);
+    free(feat); free(wts);
     return 0;
   }
   if (rows) *rows = r;
@@ -3422,8 +3329,7 @@ static int init_fp16_pair_case(const char *name, int rows_in, int cols_in,
   __fp16 *rhs = (__fp16 *)malloc(total * sizeof(__fp16));
   if (!lhs || !rhs) {
     printf("%s: failed to allocate %zu elements\n", name, total);
-    free(lhs);
-    free(rhs);
+    free(lhs); free(rhs);
     return 0;
   }
   if (rows) *rows = r;
@@ -3452,8 +3358,7 @@ static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -3476,19 +3381,14 @@ static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, alu_algorithm);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -3516,10 +3416,7 @@ static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -3619,10 +3516,7 @@ static int run_silu_case(const SiluTestConfig *config) {
   float *sigmoid_ref = (float *)malloc(total_elements * sizeof(float));
   if (!expected || !sigmoid_ref) {
     printf("%s: failed to allocate expected buffer(s)\n", name);
-    free(features);
-    free(weights);
-    free(expected);
-    free(sigmoid_ref);
+    free(features); free(weights); free(expected); free(sigmoid_ref);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -3649,21 +3543,14 @@ static int run_silu_case(const SiluTestConfig *config) {
   __fp16 *stage1_padded = float16_alu_op_padded(weights, features, size, 15);
   if (stage1_padded == NULL) {
     printf("%s: float16_alu_op_padded failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
-    free(sigmoid_ref);
+    free(features); free(weights); free(expected); free(sigmoid_ref);
     return -1;
   }
 
   float *stage1_fp32 = (float *)malloc(total_elements * sizeof(float));
   if (!stage1_fp32) {
     printf("%s: failed to allocate stage1 buffer\n", name);
-    free(stage1_padded);
-    free(features);
-    free(weights);
-    free(expected);
-    free(sigmoid_ref);
+    free(stage1_padded); free(features); free(weights); free(expected); free(sigmoid_ref);
     return -1;
   }
   const float *stage1_padded_fp32 = (const float *)stage1_padded;
@@ -3684,12 +3571,7 @@ static int run_silu_case(const SiluTestConfig *config) {
   __fp16 *stage1_fp16 = (__fp16 *)malloc(total_elements * sizeof(__fp16));
   if (!stage1_fp16) {
     printf("%s: failed to allocate stage1 fp16 buffer\n", name);
-    free(stage1_padded);
-    free(features);
-    free(weights);
-    free(expected);
-    free(sigmoid_ref);
-    free(stage1_fp32);
+    free(stage1_padded); free(features); free(weights); free(expected); free(sigmoid_ref); free(stage1_fp32);
     return -1;
   }
   for (size_t i = 0; i < total_elements; i++) {
@@ -3700,13 +3582,7 @@ static int run_silu_case(const SiluTestConfig *config) {
   __fp16 *scale = (__fp16 *)malloc(total_elements * sizeof(__fp16));
   if (!scale) {
     printf("%s: failed to allocate scale buffer\n", name);
-    free(stage1_padded);
-    free(features);
-    free(weights);
-    free(expected);
-    free(sigmoid_ref);
-    free(stage1_fp32);
-    free(stage1_fp16);
+    free(stage1_padded); free(features); free(weights); free(expected); free(sigmoid_ref); free(stage1_fp32); free(stage1_fp16);
     return -1;
   }
   for (size_t i = 0; i < total_elements; i++) {
@@ -3717,14 +3593,7 @@ static int run_silu_case(const SiluTestConfig *config) {
   __fp16 *stage2_packed = float16_alu_op(stage1_fp16, scale, 9, size);
   if (!stage2_packed) {
     printf("%s: float16_alu_op (mul) failed\n", name);
-    free(stage1_padded);
-    free(features);
-    free(weights);
-    free(expected);
-    free(sigmoid_ref);
-    free(stage1_fp32);
-    free(stage1_fp16);
-    free(scale);
+    free(stage1_padded); free(features); free(weights); free(expected); free(sigmoid_ref); free(stage1_fp32); free(stage1_fp16); free(scale);
     return -1;
   }
 
@@ -3746,8 +3615,7 @@ static int run_silu_case(const SiluTestConfig *config) {
   for (size_t i = 0; i < total_elements; i++) {
     result[i] = stage2_packed[i * stride_elems];
   }
-  free(stage2_packed);
-  free(stage1_padded);
+  free(stage2_packed); free(stage1_padded);
 
   print_fp16_grid("Result (SILU)", result, rows, cols);
 
@@ -3765,14 +3633,7 @@ static int run_silu_case(const SiluTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(sigmoid_ref);
-  free(stage1_fp32);
-  free(stage1_fp16);
-  free(scale);
-  free(result);
+  free(features); free(weights); free(expected); free(sigmoid_ref); free(stage1_fp32); free(stage1_fp16); free(scale); free(result);
   return matches ? 0 : -1;
 }
 
@@ -3792,8 +3653,7 @@ static int run_sigmoid_case(const SigmoidTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -3811,19 +3671,14 @@ static int run_sigmoid_case(const SigmoidTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 14);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   __fp16 *result = (__fp16 *)malloc(total_elements * sizeof(__fp16));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_elems = 0x10 / sizeof(__fp16);
@@ -3849,10 +3704,7 @@ static int run_sigmoid_case(const SigmoidTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -3872,8 +3724,7 @@ static int run_sin_case(const SinTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -3891,19 +3742,14 @@ static int run_sin_case(const SinTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 28);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -3930,10 +3776,7 @@ static int run_sin_case(const SinTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -3953,8 +3796,7 @@ static int run_tan_case(const TanTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -3972,19 +3814,14 @@ static int run_tan_case(const TanTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 30);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4011,10 +3848,7 @@ static int run_tan_case(const TanTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4034,8 +3868,7 @@ static int run_cos_case(const CosTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4053,19 +3886,14 @@ static int run_cos_case(const CosTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 29);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4092,10 +3920,7 @@ static int run_cos_case(const CosTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4179,8 +4004,7 @@ static int run_asin_case(const AsinTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4200,19 +4024,14 @@ static int run_asin_case(const AsinTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 32);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4239,10 +4058,7 @@ static int run_asin_case(const AsinTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4262,8 +4078,7 @@ static int run_acos_case(const AcosTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4283,19 +4098,14 @@ static int run_acos_case(const AcosTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 33);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4322,10 +4132,7 @@ static int run_acos_case(const AcosTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4345,8 +4152,7 @@ static int run_atan_case(const AtanTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4366,19 +4172,14 @@ static int run_atan_case(const AtanTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 34);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4405,10 +4206,7 @@ static int run_atan_case(const AtanTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4428,8 +4226,7 @@ static int run_asinh_case(const AsinhTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4449,19 +4246,14 @@ static int run_asinh_case(const AsinhTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 35);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4488,10 +4280,7 @@ static int run_asinh_case(const AsinhTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4511,8 +4300,7 @@ static int run_acosh_case(const AcoshTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4532,19 +4320,14 @@ static int run_acosh_case(const AcoshTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 36);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4571,10 +4354,7 @@ static int run_acosh_case(const AcoshTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4594,8 +4374,7 @@ static int run_sinh_case(const SinhTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4618,19 +4397,14 @@ static int run_sinh_case(const SinhTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 38);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4657,10 +4431,7 @@ static int run_sinh_case(const SinhTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4680,8 +4451,7 @@ static int run_cosh_case(const CoshTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4704,19 +4474,14 @@ static int run_cosh_case(const CoshTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 39);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4743,10 +4508,7 @@ static int run_cosh_case(const CoshTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4766,8 +4528,7 @@ static int run_tanh_case(const TanhTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4785,19 +4546,14 @@ static int run_tanh_case(const TanhTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 31);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4824,10 +4580,7 @@ static int run_tanh_case(const TanhTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -4847,8 +4600,7 @@ static int run_atanh_case(const AtanhTestConfig *config) {
   float *expected = (float *)malloc(total_elements * sizeof(float));
   if (!expected) {
     printf("%s: failed to allocate expected buffer\n", name);
-    free(features);
-    free(weights);
+    free(features); free(weights);
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -4868,19 +4620,14 @@ static int run_atanh_case(const AtanhTestConfig *config) {
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 37);
   if (result_padded == NULL) {
     printf("%s: float16_alu_op failed\n", name);
-    free(features);
-    free(weights);
-    free(expected);
+    free(features); free(weights); free(expected);
     return -1;
   }
 
   float *result = (float *)malloc(total_elements * sizeof(float));
   if (!result) {
     printf("%s: failed to allocate unpack buffer\n", name);
-    free(result_padded);
-    free(features);
-    free(weights);
-    free(expected);
+    free(result_padded); free(features); free(weights); free(expected);
     return -1;
   }
   const size_t stride_fp32 = 0x10 / sizeof(float);
@@ -4907,10 +4654,7 @@ static int run_atanh_case(const AtanhTestConfig *config) {
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features);
-  free(weights);
-  free(expected);
-  free(result);
+  free(features); free(weights); free(expected); free(result);
   return matches ? 0 : -1;
 }
 
@@ -5052,8 +4796,7 @@ static int validate_matmul_pack(const __fp16 *b, const MatmulTestConfig *config)
   __fp16 *packed = (__fp16*)malloc(packed_elems * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc((size_t)layout.K * (size_t)layout.N * sizeof(__fp16));
   if (!packed || !unpacked) {
-    free(packed);
-    free(unpacked);
+    free(packed); free(unpacked);
     printf("failed to allocate matmul pack buffers for %s\n",
         config->name ? config->name : "matmul");
     return -1;
@@ -5087,8 +4830,7 @@ static int validate_matmul_pack(const __fp16 *b, const MatmulTestConfig *config)
     float diff = fabsf((float)unpacked[i] - (float)b[i]);
     if (diff > max_diff) max_diff = diff;
   }
-  free(packed);
-  free(unpacked);
+  free(packed); free(unpacked);
   if (max_diff > 1e-3f) {
     printf("%s matmul weight pack mismatch (max diff %.6f)\n",
         config->name ? config->name : "matmul", max_diff);
@@ -5184,9 +4926,7 @@ static int matmul_split_k(const __fp16 *a, const __fp16 *b, float *dst,
   __fp16 *b_tile = (__fp16*)malloc((size_t)max_k * (size_t)N * sizeof(__fp16));
   float *tile_out = (float*)malloc((size_t)M * (size_t)N * sizeof(float));
   if (!a_tile || !b_tile || !tile_out) {
-    free(a_tile);
-    free(b_tile);
-    free(tile_out);
+    free(a_tile); free(b_tile); free(tile_out);
     printf("failed to allocate matmul K-split buffers\n");
     return -1;
   }
@@ -5224,9 +4964,7 @@ static int matmul_split_k(const __fp16 *a, const __fp16 *b, float *dst,
     if (!npu_output) {
       printf("float16_matmul failed for K tile offset=%d size=%d\n",
           k_offset, tile_k);
-      free(a_tile);
-      free(b_tile);
-      free(tile_out);
+      free(a_tile); free(b_tile); free(tile_out);
       return -1;
     }
     unpack_matmul_output_fp32(npu_output, tile_out, M, N);
@@ -5238,9 +4976,7 @@ static int matmul_split_k(const __fp16 *a, const __fp16 *b, float *dst,
   }
 
   matmul_params = make_matmul_params(M, N, K);
-  free(a_tile);
-  free(b_tile);
-  free(tile_out);
+  free(a_tile); free(b_tile); free(tile_out);
   return 0;
 }
 
@@ -5254,8 +4990,7 @@ static int matmul_split_n(const __fp16 *a, const __fp16 *b, float *dst,
   __fp16 *b_tile = (__fp16*)malloc((size_t)K * (size_t)max_n * sizeof(__fp16));
   float *tile_out = (float*)malloc((size_t)M * (size_t)max_n * sizeof(float));
   if (!b_tile || !tile_out) {
-    free(b_tile);
-    free(tile_out);
+    free(b_tile); free(tile_out);
     printf("failed to allocate matmul N-split buffers\n");
     return -1;
   }
@@ -5284,8 +5019,7 @@ static int matmul_split_n(const __fp16 *a, const __fp16 *b, float *dst,
     }
     if (K > max_n) {
       if (matmul_split_k(a, b_tile, tile_out, M, K, tile_n) != 0) {
-        free(b_tile);
-        free(tile_out);
+        free(b_tile); free(tile_out);
         return -1;
       }
     } else {
@@ -5293,8 +5027,7 @@ static int matmul_split_n(const __fp16 *a, const __fp16 *b, float *dst,
       if (!npu_output) {
         printf("float16_matmul failed for N tile offset=%d size=%d\n",
             n_offset, tile_n);
-        free(b_tile);
-        free(tile_out);
+        free(b_tile); free(tile_out);
         return -1;
       }
       unpack_matmul_output_fp32(npu_output, tile_out, M, tile_n);
@@ -5309,8 +5042,7 @@ static int matmul_split_n(const __fp16 *a, const __fp16 *b, float *dst,
   }
 
   matmul_params = make_matmul_params(M, N, K);
-  free(b_tile);
-  free(tile_out);
+  free(b_tile); free(tile_out);
   return 0;
 }
 
@@ -5330,8 +5062,7 @@ static int run_matmul_case(const MatmulTestConfig *config) {
   if (!a || !b) {
     printf("failed to allocate input buffers for %s\n",
         config->name ? config->name : "matmul");
-    free(a);
-    free(b);
+    free(a); free(b);
     return -1;
   }
 
@@ -5353,8 +5084,7 @@ static int run_matmul_case(const MatmulTestConfig *config) {
 
   if (M == 9 && K == 9 && N == 9) {
     if (validate_matmul_pack(b, config) != 0) {
-      free(a);
-      free(b);
+      free(a); free(b);
       return -1;
     }
   }
@@ -5376,10 +5106,7 @@ static int run_matmul_case(const MatmulTestConfig *config) {
   if ((do_validate && !cpu) || !actual) {
     printf("failed to allocate output buffers for %s\n",
         config->name ? config->name : "matmul");
-    free(a);
-    free(b);
-    free(cpu);
-    free(actual);
+    free(a); free(b); free(cpu); free(actual);
     return -1;
   }
 
@@ -5410,28 +5137,19 @@ static int run_matmul_case(const MatmulTestConfig *config) {
   int max_m = matmul_max_m_tile(K);
   if (M > max_m) {
     if (matmul_split_m(a, b, actual, M, K, N) != 0) {
-      free(a);
-      free(b);
-      free(cpu);
-      free(actual);
+      free(a); free(b); free(cpu); free(actual);
       return -1;
     }
     used_split = true;
   } else if (N > 8192) {
     if (matmul_split_n(a, b, actual, M, K, N) != 0) {
-      free(a);
-      free(b);
-      free(cpu);
-      free(actual);
+      free(a); free(b); free(cpu); free(actual);
       return -1;
     }
     used_split = true;
   } else if (K > 8192) {
     if (matmul_split_k(a, b, actual, M, K, N) != 0) {
-      free(a);
-      free(b);
-      free(cpu);
-      free(actual);
+      free(a); free(b); free(cpu); free(actual);
       return -1;
     }
     used_split = true;
@@ -5445,12 +5163,7 @@ static int run_matmul_case(const MatmulTestConfig *config) {
     if (!packed_input || !packed_weight) {
       printf("failed to allocate packed buffers for %s\n",
           config->name ? config->name : "matmul");
-      free(a);
-      free(b);
-      free(cpu);
-      free(actual);
-      free(packed_input);
-      free(packed_weight);
+      free(a); free(b); free(cpu); free(actual); free(packed_input); free(packed_weight);
       return -1;
     }
     for (size_t i = 0; i < packed_input_elems; i++) packed_input[i] = (__fp16)0;
@@ -5471,8 +5184,7 @@ static int run_matmul_case(const MatmulTestConfig *config) {
       pack_matmul_weights_fp16(packed_weight, b, layout.N, layout.K, layout.align_in, layout.align_out);
     }
     npu_output = float16_matmul_prepacked(config, packed_input, packed_weight);
-    free(packed_input);
-    free(packed_weight);
+    free(packed_input); free(packed_weight);
   } else {
     npu_output = float16_matmul(a, b, 11, M, N, K);
   }
@@ -5480,10 +5192,7 @@ static int run_matmul_case(const MatmulTestConfig *config) {
   if (!used_split && !npu_output) {
     printf("float16_matmul failed for %s\n",
         config->name ? config->name : "matmul");
-    free(a);
-    free(b);
-    free(cpu);
-    free(actual);
+    free(a); free(b); free(cpu); free(actual);
     return -1;
   }
 
@@ -5501,15 +5210,10 @@ static int run_matmul_case(const MatmulTestConfig *config) {
     int *mismatch_by_row = (int *)calloc((size_t)M, sizeof(int));
     int *mismatch_by_col = (int *)calloc((size_t)N, sizeof(int));
     if (!mismatch_by_row || !mismatch_by_col) {
-      free(mismatch_by_row);
-      free(mismatch_by_col);
+      free(mismatch_by_row); free(mismatch_by_col);
       printf("failed to allocate mismatch counters for %s\n",
           config->name ? config->name : "matmul");
-      free(a);
-      free(b);
-      free(cpu);
-      free(actual);
-      free(npu_output);
+      free(a); free(b); free(cpu); free(actual); free(npu_output);
       return -1;
     }
     for (int m = 0; m < M; m++) {
@@ -5557,17 +5261,12 @@ static int run_matmul_case(const MatmulTestConfig *config) {
           worst_row, worst_row_count,
           worst_col, worst_col_count);
     }
-    free(mismatch_by_row);
-    free(mismatch_by_col);
+    free(mismatch_by_row); free(mismatch_by_col);
   } else {
     printf("%s: CPU validation disabled (MATMUL_VALIDATE=0)\n",
         config->name ? config->name : "matmul");
   }
-  free(a);
-  free(b);
-  free(cpu);
-  free(actual);
-  free(npu_output);
+  free(a); free(b); free(cpu); free(actual); free(npu_output);
   if (!do_validate) return 0;
   return (max_diff <= 1e-2f) ? 0 : -1;
 }
@@ -5642,9 +5341,7 @@ static int run_conv1d_case(const Conv1dTestConfig *config) {
   __fp16 *npu_kernel = (__fp16*)malloc(expanded_kernel_elems * sizeof(__fp16));
   if (!input || !kernel || !npu_kernel) {
     printf("failed to allocate conv1d buffers for %s\n", config->name);
-    free(input);
-    free(kernel);
-    free(npu_kernel);
+    free(input); free(kernel); free(npu_kernel);
     return -1;
   }
 
@@ -5688,9 +5385,7 @@ static int run_conv1d_case(const Conv1dTestConfig *config) {
   float *cpu_output = (float*)malloc(cpu_output_elements * sizeof(float));
   if (!cpu_output) {
     printf("failed to allocate cpu output buffer for %s\n", config->name);
-    free(input);
-    free(kernel);
-    free(npu_kernel);
+    free(input); free(kernel); free(npu_kernel);
     return -1;
   }
 
@@ -5734,10 +5429,7 @@ static int run_conv1d_case(const Conv1dTestConfig *config) {
   float *npu_output = (float*)malloc(cpu_output_elements * sizeof(float));
   if (!npu_output) {
     printf("failed to allocate unpack buffer for %s\n", config->name);
-    free(cpu_output);
-    free(input);
-    free(kernel);
-    free(npu_kernel);
+    free(cpu_output); free(input); free(kernel); free(npu_kernel);
     return -1;
   }
 
@@ -5764,11 +5456,7 @@ static int run_conv1d_case(const Conv1dTestConfig *config) {
     release_conv_result(&result);
   }
   if (!batch_success) {
-    free(npu_output);
-    free(cpu_output);
-    free(input);
-    free(kernel);
-    free(npu_kernel);
+    free(npu_output); free(cpu_output); free(input); free(kernel); free(npu_kernel);
     return -1;
   }
 
@@ -5790,11 +5478,7 @@ static int run_conv1d_case(const Conv1dTestConfig *config) {
   }
   printf("%s: matches CPU -> %s\n", config->name, matches ? "YES" : "NO");
 
-  free(npu_output);
-  free(cpu_output);
-  free(input);
-  free(kernel);
-  free(npu_kernel);
+  free(npu_output); free(cpu_output); free(input); free(kernel); free(npu_kernel);
   return matches ? 0 : -1;
 }
 
@@ -5933,8 +5617,7 @@ static int run_conv2d_exec(const Conv2dTestConfig *config, const __fp16 *input,
       float *output_flat = (float*)malloc(flat_elems * sizeof(float));
       if (!output_flat) {
         printf("failed to allocate flat output buffer for %s\n", config->name);
-        free(result);
-        free(tile_input);
+        free(result); free(tile_input);
         return -1;
       }
       unpack_nc1hwc2_fp16(result, output_flat,
@@ -5948,8 +5631,7 @@ static int run_conv2d_exec(const Conv2dTestConfig *config, const __fp16 *input,
           memcpy(output_nchw + dst_base, output_flat + src_base, (size_t)flat_width * sizeof(float));
         }
       }
-      free(output_flat);
-      free(tile_input);
+      free(output_flat); free(tile_input);
     }
     return 0;
   }
@@ -6338,12 +6020,7 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   printf("%s: matches CPU -> %s (mismatches=%d)\n",
       config->name, mismatches ? "NO" : "YES", mismatches);
 
-  free(input);
-  free(kernel);
-  free(npu_kernel);
-  free(input_packed);
-  free(expected);
-  free(output_nchw);
+  free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected); free(output_nchw);
   return mismatches ? -1 : 0;
 }
 
