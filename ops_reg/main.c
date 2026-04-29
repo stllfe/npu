@@ -2271,6 +2271,242 @@ static int run_max_case(const MaxTestConfig *config) {
   return matches ? 0 : -1;
 }
 
+static int run_minmax_bin_case(const MaxTestConfig *config, uint32_t alu_algorithm,
+    const char *label, int is_min) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "minmax_bin_case";
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
+    return -1;
+  }
+  __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
+  if (!unpacked) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(a); free(b); free(unpacked);
+    return -1;
+  }
+
+  int *expected = (int *)malloc(total_elements * sizeof(int));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(a); free(b); free(unpacked); free(expected);
+    return -1;
+  }
+
+  for (int i = 0; i < size; i++) {
+    float va = (float)i * 0.25f;
+    float vb = va;
+    if ((i % 4) == 0) {
+      vb = va;
+    } else if ((i % 2) == 0) {
+      vb = va - 0.5f;
+    } else {
+      vb = va + 0.5f;
+    }
+    a[i] = (__fp16)va;
+    b[i] = (__fp16)vb;
+    expected[i] = is_min ? (va <= vb) : (va >= vb);
+  }
+
+  set_max_params(rows, cols);
+  __fp16 *result = float16_alu_op(a, b, alu_algorithm, size);
+  if (!result) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(a); free(b); free(unpacked); free(expected);
+    return -1;
+  }
+
+  const size_t stride_fp16 = 0x10 / sizeof(__fp16);
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const size_t stride_bytes = 0x10;
+  const float *result_fp32 = (const float *)result;
+  const uint8_t *raw = (const uint8_t *)result;
+  const size_t raw_bytes = (size_t)size * stride_bytes;
+  for (int i = 0; i < size; i++) unpacked[i] = result[(size_t)i * stride_fp16];
+
+  int nonzero_bytes = 0;
+  for (size_t i = 0; i < raw_bytes; i++) {
+    if (raw[i] != 0) nonzero_bytes++;
+  }
+
+  typedef struct {
+    const char *name;
+    int mismatches;
+  } BinFmtResult;
+
+  BinFmtResult results[10];
+  int result_count = 0;
+
+  int mismatches_fp16_pos = 0;
+  int mismatches_fp16_nz = 0;
+  int mismatches_fp32_pos = 0;
+  int mismatches_fp32_nz = 0;
+  int mismatches_u8 = 0;
+  int mismatches_u16 = 0;
+  int mismatches_u32 = 0;
+  int mismatches_slot_any = 0;
+  int mismatches_bit_lsb = 0;
+  int mismatches_bit_msb = 0;
+
+  for (int i = 0; i < size; i++) {
+    const uint8_t *slot = raw + (size_t)i * stride_bytes;
+    float v16 = (float)unpacked[i];
+    float v32 = result_fp32[(size_t)i * stride_fp32];
+    int actual_fp16_pos = v16 > 0.0f ? 1 : 0;
+    int actual_fp16_nz = v16 != 0.0f ? 1 : 0;
+    int actual_fp32_pos = v32 > 0.0f ? 1 : 0;
+    int actual_fp32_nz = v32 != 0.0f ? 1 : 0;
+
+    uint8_t v8 = slot[0];
+    uint16_t v16u = 0;
+    uint32_t v32u = 0;
+    memcpy(&v16u, slot, sizeof(uint16_t));
+    memcpy(&v32u, slot, sizeof(uint32_t));
+    int actual_u8 = v8 != 0;
+    int actual_u16 = v16u != 0;
+    int actual_u32 = v32u != 0;
+    int actual_any = 0;
+    for (size_t j = 0; j < stride_bytes; j++) {
+      if (slot[j] != 0) {
+        actual_any = 1;
+        break;
+      }
+    }
+
+    int exp = expected[i];
+    if (actual_fp16_pos != exp) mismatches_fp16_pos++;
+    if (actual_fp16_nz != exp) mismatches_fp16_nz++;
+    if (actual_fp32_pos != exp) mismatches_fp32_pos++;
+    if (actual_fp32_nz != exp) mismatches_fp32_nz++;
+    if (actual_u8 != exp) mismatches_u8++;
+    if (actual_u16 != exp) mismatches_u16++;
+    if (actual_u32 != exp) mismatches_u32++;
+    if (actual_any != exp) mismatches_slot_any++;
+  }
+
+  size_t bit_bytes = (size_t)(size + 7) / 8;
+  if (raw_bytes >= bit_bytes) {
+    for (int i = 0; i < size; i++) {
+      size_t byte = (size_t)i / 8;
+      int bit = i % 8;
+      int actual_lsb = (raw[byte] >> bit) & 0x1;
+      int actual_msb = (raw[byte] >> (7 - bit)) & 0x1;
+      int exp = expected[i];
+      if (actual_lsb != exp) mismatches_bit_lsb++;
+      if (actual_msb != exp) mismatches_bit_msb++;
+    }
+  } else {
+    mismatches_bit_lsb = size;
+    mismatches_bit_msb = size;
+  }
+
+  results[result_count++] = (BinFmtResult){ "fp16_pos", mismatches_fp16_pos };
+  results[result_count++] = (BinFmtResult){ "fp16_nz", mismatches_fp16_nz };
+  results[result_count++] = (BinFmtResult){ "fp32_pos", mismatches_fp32_pos };
+  results[result_count++] = (BinFmtResult){ "fp32_nz", mismatches_fp32_nz };
+  results[result_count++] = (BinFmtResult){ "u8_slot", mismatches_u8 };
+  results[result_count++] = (BinFmtResult){ "u16_slot", mismatches_u16 };
+  results[result_count++] = (BinFmtResult){ "u32_slot", mismatches_u32 };
+  results[result_count++] = (BinFmtResult){ "slot_any", mismatches_slot_any };
+  results[result_count++] = (BinFmtResult){ "bitpack_lsb", mismatches_bit_lsb };
+  results[result_count++] = (BinFmtResult){ "bitpack_msb", mismatches_bit_msb };
+
+  int best_idx = 0;
+  for (int i = 1; i < result_count; i++) {
+    if (results[i].mismatches < results[best_idx].mismatches) best_idx = i;
+  }
+
+  if (total_elements <= 64) {
+    print_fp16_grid("Input A", a, rows, cols);
+    print_fp16_grid("Input B", b, rows, cols);
+    print_fp16_grid("Result (as fp16)", unpacked, rows, cols);
+    printf("%s (%s): output bytes nonzero=%d/%zu\n",
+        name, label ? label : "minmax_bin", nonzero_bytes, raw_bytes);
+    size_t dump_len = raw_bytes < 32 ? raw_bytes : 32;
+    printf("%s (%s): output bytes[0..%zu):", name, label ? label : "minmax_bin", dump_len);
+    for (size_t i = 0; i < dump_len; i++) {
+      printf(" %02x", raw[i]);
+    }
+    printf("\n");
+  } else {
+    printf("%s (%s): tested %dx%d (total %zu elements)\n",
+        name, label ? label : "minmax_bin", rows, cols, total_elements);
+  }
+
+  if (results[best_idx].mismatches == 0) {
+    printf("%s (%s): matches CPU -> YES (format=%s)\n",
+        name, label ? label : "minmax_bin", results[best_idx].name);
+  } else {
+    printf("%s (%s): matches CPU -> NO (best format=%s mismatches=%d, nonzero=%d)\n",
+        name, label ? label : "minmax_bin",
+        results[best_idx].name, results[best_idx].mismatches, nonzero_bytes);
+    for (int i = 0; i < result_count; i++) {
+      printf("  candidate %s mismatches=%d\n", results[i].name, results[i].mismatches);
+    }
+  }
+
+  breakpoint();
+  free(result);
+  free(a); free(b); free(unpacked); free(expected);
+  return results[best_idx].mismatches == 0 ? 0 : -1;
+}
+
+static int run_minmax_bin_regcheck(int rows, int cols, uint32_t alu_algorithm,
+    uint32_t expected_algo, const char *label) {
+  int size = rows > 0 && cols > 0 ? rows * cols : 1;
+  if (size < 1) size = 1;
+  size_t bytes = (size_t)size * 0x10;
+  set_max_params(rows, cols);
+
+  int fd = getDeviceFd();
+  struct MemHandles handles = createRegCmd(fd, bytes, bytes, bytes, alu_algorithm);
+  if (!handles.tasks || regs.size == 0) {
+    printf("minmax_bin %s: failed to build regcmds\n", label ? label : "regcheck");
+    release_memhandles(fd, &handles);
+    close(fd);
+    return -1;
+  }
+
+  int found = 0;
+  int binary_set = 0;
+  int algo_match = 0;
+  for (size_t i = 0; i < regs.size; i++) {
+    uint64_t packed = regs.data[i];
+    uint32_t reg = (uint32_t)(packed & 0xffffu);
+    if (reg != REG_DPU_EW_CFG) continue;
+    uint32_t val = (uint32_t)((packed >> 16) & 0xffffffffu);
+    found = 1;
+    if (val & DPU_EW_CFG_EW_BINARY_EN(1)) binary_set = 1;
+    uint32_t algo = (val & DPU_EW_CFG_EW_ALU_ALGO__MASK) >> DPU_EW_CFG_EW_ALU_ALGO__SHIFT;
+    if (algo == expected_algo) algo_match = 1;
+  }
+
+  release_memhandles(fd, &handles);
+  close(fd);
+
+  if (!found) {
+    printf("minmax_bin %s: missing REG_DPU_EW_CFG\n", label ? label : "regcheck");
+    return -1;
+  }
+  if (!binary_set) {
+    printf("minmax_bin %s: EW_BINARY_EN not set\n", label ? label : "regcheck");
+    return -1;
+  }
+  if (!algo_match) {
+    printf("minmax_bin %s: EW_ALU_ALGO mismatch\n", label ? label : "regcheck");
+    return -1;
+  }
+  printf("minmax_bin %s: regcfg OK (EW_BINARY_EN=1, EW_ALU_ALGO=%u)\n",
+      label ? label : "regcheck", expected_algo);
+  return 0;
+}
+
 static int run_minus_case(const MinusTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "minus_case";
@@ -2988,6 +3224,28 @@ int test_max(int argc, char **argv) {
   for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
     if (run_max_case(&configs[i]) != 0) status = -1;
   }
+  return status;
+}
+
+int test_minmax_bin(int argc, char **argv) {
+  if (argc >= 3) {
+    int rows = atoi(argv[1]);
+    int cols = atoi(argv[2]);
+    MaxTestConfig cli = {"minmax_bin_cli", rows, cols};
+    int status = 0;
+    if (run_minmax_bin_regcheck(rows, cols, ALU_ALGO_MAX_BIN, 0, "max_bin") != 0) status = -1;
+    if (run_minmax_bin_regcheck(rows, cols, ALU_ALGO_MIN_BIN, 1, "min_bin") != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MAX_BIN, "max_bin", 0) != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MIN_BIN, "min_bin", 1) != 0) status = -1;
+    return status;
+  }
+
+  int status = 0;
+  MaxTestConfig config = {"minmax_bin_4x4", 4, 4};
+  if (run_minmax_bin_regcheck(config.rows, config.cols, ALU_ALGO_MAX_BIN, 0, "max_bin") != 0) status = -1;
+  if (run_minmax_bin_regcheck(config.rows, config.cols, ALU_ALGO_MIN_BIN, 1, "min_bin") != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MAX_BIN, "max_bin", 0) != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MIN_BIN, "min_bin", 1) != 0) status = -1;
   return status;
 }
 
@@ -6428,7 +6686,7 @@ typedef struct {
 
 static const TestEntry kTests[] = {
 #define TEST_ENTRY(name) {#name, test_##name}
-    TEST_ENTRY(max), TEST_ENTRY(div), TEST_ENTRY(idiv), TEST_ENTRY(maxpool),
+    TEST_ENTRY(max), TEST_ENTRY(minmax_bin), TEST_ENTRY(div), TEST_ENTRY(idiv), TEST_ENTRY(maxpool),
     TEST_ENTRY(globalmaxpool), TEST_ENTRY(globalminpool), TEST_ENTRY(minpool),
     TEST_ENTRY(avgpool), TEST_ENTRY(globalavgpool), TEST_ENTRY(cmple),
     TEST_ENTRY(cmpgt), TEST_ENTRY(cmpge), TEST_ENTRY(cmplt), TEST_ENTRY(cmpeq),
