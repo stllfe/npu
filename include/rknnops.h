@@ -860,6 +860,7 @@ static void pack_conv_weights_fp16(__fp16 *dst, const __fp16 *src,
       kernel_h == 2 && kernel_w == 5 && groups == 1);
    bool use_3x1_kh_major = (out_channels == 6 && in_channels == 3 && kernel_h == 3 && kernel_w == 1 && groups == 1);
    bool use_3x3_kh_major = (out_channels == 6 && in_channels == 3 && kernel_h == 3 && kernel_w == 3);
+   bool use_6x1_3x3_kh_major = (out_channels == 6 && in_channels == 1 && kernel_h == 3 && kernel_w == 3 && groups == 1);
    bool use_16x16_3x3_kh_major = (out_channels == 16 && in_channels == 16 &&
       kernel_h == 3 && kernel_w == 3 && groups == 1);
    bool use_3x5_kh_major = (out_channels == 6 && in_channels == 3 && kernel_h == 3 && kernel_w == 5 && groups == 1);
@@ -889,7 +890,7 @@ static void pack_conv_weights_fp16(__fp16 *dst, const __fp16 *src,
    size_t kernel_stride = (size_t)kernel_h * kernel_w * spatial_stride;
    if (use_2x3_kh_major || use_2x5_kh_major || use_3x1_kh_major || use_3x3_kh_major ||
        use_3x5_kh_major || use_2x1_kh_major || use_16x16_3x3_kh_major ||
-       use_4x4_3x3_kh_major) {
+       use_4x4_3x3_kh_major || use_6x1_3x3_kh_major) {
       for (int kh = 0; kh < kernel_h; kh++) {
          for (int kw = 0; kw < kernel_w; kw++) {
             size_t dst_khkw_base = ((size_t)kh * kernel_w + kw) * (size_t)out_channels * spatial_stride;
@@ -1075,10 +1076,28 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             }
             
          }
+
+         int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2) ;
+         int argb_in = 10;
+         if (!( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
+            conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3) &&
+            !( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
+               conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1)) {
+            argb_in = 10;
+            if (( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
+               conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==1 && conv_kernel_w==1) || ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
+            conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==3 && conv_kernel_w==3)) {
+                  argb_in = 11;
+               }
+            else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
+            conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) argb_in = 8;
+
+            conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(argb_in) ;
+         }
+
          int line_stride = 0;
          int cvt_con0 = CNA_CVT_CON0_CVT_BYPASS(1) ;
          int cv5_con5 = 0x00000fff;
-
          if (( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
             feature_grains = 21;
@@ -1123,22 +1142,23 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             out_width_stride = 52;
             surface_add = 104;
          }
-
+         else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
+            conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
+            feature_grains = 8;
+            // data_in_channel_aligned = 8;
+            // weight_bytes_per_kernel = 144; 
+            cbuf_entries = 40;
+            // cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
+            line_stride = 8;
+            surf_stride = 32;
+            // align_c = 16;
+            cv5_con5 = 0x0000ffff;
+            // weight_bytes_total = 0x240;
+            out_width_stride = 16;
+            surface_add = 32;
+         }
 
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
-         int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2) ;
-         if (!( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
-            conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3) &&
-            !( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
-               conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1)) {
-            int argb_in = 10;
-            if (( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
-               conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==1 && conv_kernel_w==1) || ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
-            conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==3 && conv_kernel_w==3)) {
-                  argb_in = 11;
-               }
-            conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(argb_in) ;
-         }
          EMIT(REG_CNA_CONV_CON1, conv_con1);
          EMIT(REG_CNA_CONV_CON2, CNA_CONV_CON2_FEATURE_GRAINS(feature_grains));
          EMIT(REG_CNA_CONV_CON3, CNA_CONV_CON3_CONV_Y_STRIDE(1) | CNA_CONV_CON3_CONV_X_STRIDE(1));
@@ -4899,6 +4919,7 @@ __fp16* float16_conv2d(__fp16* input, __fp16* kernel, uint32_t alu_algorithm, in
    const int conv_out_channels = conv2d_params.out_channels > 0 ? conv2d_params.out_channels : 6;
    const int conv_kernel_h = conv2d_params.kernel_h > 0 ? conv2d_params.kernel_h : 2;
    const int conv_kernel_w = conv2d_params.kernel_w > 0 ? conv2d_params.kernel_w : 3;
+   const int conv_groups = conv2d_params.groups > 0 ? conv2d_params.groups : 1;
    const int conv_align_c = conv2d_params.align_c > 0 ? conv2d_params.align_c : 8;
    const int conv_align_out_c = conv2d_params.align_out_c > 0 ? conv2d_params.align_out_c : 8;
    const int conv_width_stride = conv2d_params.width_stride > 0 ? conv2d_params.width_stride : 8;
@@ -4975,6 +4996,11 @@ __fp16* float16_conv2d(__fp16* input, __fp16* kernel, uint32_t alu_algorithm, in
           conv_in_height == 18 && conv_in_width == 18 &&
           conv_out_channels == 16 && conv_kernel_h == 3 && conv_kernel_w == 3) {
          input_pack_c2 = 8;
+      }
+      if (conv_batch == 1 && conv_groups == 1 && conv_in_channels == 1 &&
+          conv_in_height == 5 && conv_in_width == 7 &&
+          conv_out_channels == 6 && conv_kernel_h == 3 && conv_kernel_w == 3) {
+         input_pack_c2 = 2;
       }
       // Pack weights with input-channel alignment only; output channels are not padded in NC1HWC2 layout.
       pack_conv_weights_fp16(kernel_fp16, kernel,

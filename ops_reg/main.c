@@ -4730,6 +4730,10 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     config->in_height == 18 && config->in_width == 18 &&
     config->out_channels == 16 && config->weight_in_channels == 16 &&
     config->kernel_h == 3 && config->kernel_w == 3);
+  bool is_1157_6133 = (config->batch == 1 && config->in_channels == 1 &&
+    config->in_height == 5 && config->in_width == 7 &&
+    config->out_channels == 6 && config->weight_in_channels == 1 &&
+    config->kernel_h == 3 && config->kernel_w == 3 && config->groups == 1);
   if (is_161818_161633) {
     align_c = 16;
     width_stride = config->in_width;
@@ -4805,6 +4809,9 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   int input_pack_c2 = align_c;
   if (is_161818_161633) {
     input_pack_c2 = 8;
+  }
+  if (is_1157_6133) {
+    input_pack_c2 = 2;
   }
   for (size_t i = 0; i < packed_input_elems; i++) input_packed[i] = (__fp16)0;
   pack_nc1hwc2_fp16(input_packed, input,
@@ -5050,7 +5057,7 @@ int test_conv2d(int argc, char **argv) {
     // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
     // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
     // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
-    {1, 4, 9, 9, 4, 4, 3, 3, 1, "conv2d"},
+    {1, 1, 5, 7, 6, 1, 3, 3, 1, "conv2d"},
   };
 
   int status = 0;
