@@ -341,6 +341,7 @@ void push(DynamicArray *arr, uint64_t value) {
 
 #define ALU_ALGO_MAX_BIN 56
 #define ALU_ALGO_MIN_BIN 57
+static inline double clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 static uint32_t current_alu_algorithm = 2; // Default to Add (2)
 void set_alu_algorithm(uint32_t algo) {
@@ -492,6 +493,274 @@ static void emit_lut_q015_sigmoid(uint64_t output_dma, uint64_t input_dma, uint3
    EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
    EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
    emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+}
+
+typedef double (*lut_map_fn)(double x, int side, void *ctx);
+typedef uint16_t (*lut_quant_u16_fn)(double y, void *ctx);
+typedef int16_t (*lut_quant_s16_fn)(double y, void *ctx);
+
+struct lut_scale_ctx {
+   double inv_scale;
+};
+
+static inline uint16_t lut_quant_q015_biased(double y, void *ctx) {
+   double inv_scale = 1.0;
+   if (ctx) {
+      inv_scale = ((const struct lut_scale_ctx *)ctx)->inv_scale;
+   }
+   long q = lround((y * inv_scale + 1.0) * 16384.0);
+   if (q < 0) q = 0;
+   if (q > 32767) q = 32767;
+   return (uint16_t)q;
+}
+
+static inline uint16_t lut_quant_q015_sigmoid(double y, void *ctx) {
+   (void)ctx;
+   long q = lround(y * 32768.0);
+   if (q < 0) q = 0;
+   if (q > 32767) q = 32767;
+   return (uint16_t)q;
+}
+
+static inline int16_t lut_quant_s16_scale(double y, void *ctx) {
+   double scale = 1.0;
+   if (ctx) {
+      scale = *(const double *)ctx;
+   }
+   long q = lround(y * scale);
+   if (q < -32768) q = -32768;
+   if (q > 32767) q = 32767;
+   return (int16_t)q;
+}
+
+static inline void init_lut_u16(uint16_t *lut, int *init, double index_scale,
+                                lut_map_fn map, void *ctx, lut_quant_u16_fn quant) {
+   if (*init) {
+      return;
+   }
+   const double step = 32.0 / index_scale;
+   for (int i = 0; i <= 512; ++i) {
+      double x = (double)(512 - i) * step;
+      double y = map(x, -1, ctx);
+      lut[i] = quant(y, ctx);
+   }
+   for (int i = 0; i <= 512; ++i) {
+      double x = (double)i * step;
+      double y = map(x, 1, ctx);
+      lut[513 + i] = quant(y, ctx);
+   }
+   *init = 1;
+}
+
+static inline void init_lut_s16(int16_t *lut, int *init, int entries, double index_scale,
+                                lut_map_fn map, void *ctx, lut_quant_s16_fn quant) {
+   if (*init) {
+      return;
+   }
+   const double step = 32.0 / index_scale;
+   for (int i = 0; i < entries; ++i) {
+      double x = (double)(entries - 1 - i) * step;
+      double y = map(x, -1, ctx);
+      lut[i] = quant(y, ctx);
+   }
+   for (int i = 0; i < entries; ++i) {
+      double x = (double)i * step;
+      double y = map(x, 1, ctx);
+      lut[entries + i] = quant(y, ctx);
+   }
+   *init = 1;
+}
+
+static inline double lut_map_sigmoid(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return 1.0 / (1.0 + exp(-xn));
+}
+
+static inline double lut_map_tanh(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return tanh(xn);
+}
+
+static inline double lut_map_sin(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return sin(xn);
+}
+
+static inline double lut_map_cos(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return cos(xn);
+}
+
+static inline double lut_map_asin(double x, int side, void *ctx) {
+   (void)ctx;
+   const double inv_half_pi = 0.6366197723675813;
+   double xn = (side < 0) ? -x : x;
+   return asin(xn) * inv_half_pi;
+}
+
+static inline double lut_map_acos(double x, int side, void *ctx) {
+   (void)ctx;
+   const double inv_pi = 0.3183098861837907;
+   double xn = (side < 0) ? -x : x;
+   return (2.0 * acos(xn) * inv_pi) - 1.0;
+}
+
+static inline double lut_map_atan(double x, int side, void *ctx) {
+   (void)ctx;
+   const double inv_half_pi = 0.6366197723675813;
+   double xn = (side < 0) ? -x : x;
+   return atan(xn) * inv_half_pi;
+}
+
+static inline double lut_map_asinh(double x, int side, void *ctx) {
+   (void)ctx;
+   const double inv_asinh_max = 0.2628363668683663;
+   double xn = (side < 0) ? -x : x;
+   return asinh(xn) * inv_asinh_max;
+}
+
+static inline double lut_map_acosh(double x, int side, void *ctx) {
+   (void)side;
+   (void)ctx;
+   const double inv_acosh_max = 0.24046329466947597;
+   double xn = x;
+   if (xn < 1.0) xn = 1.0;
+   return acosh(xn) * inv_acosh_max;
+}
+
+static inline double lut_map_atanh(double x, int side, void *ctx) {
+   (void)ctx;
+   const double inv_atanh_max = 0.2631439642242922;
+   double xn = x;
+   if (xn > 0.999) xn = 0.999;
+   double y = atanh(xn) * inv_atanh_max;
+   return (side < 0) ? -y : y;
+}
+
+static inline double lut_map_sinh(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return sinh(xn);
+}
+
+static inline double lut_map_cosh(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return cosh(xn);
+}
+
+static inline double lut_map_celu(double x, int side, void *ctx) {
+   (void)ctx;
+   const double alpha = 1.0;
+   double xn = (side < 0) ? -x : x;
+   return (xn > 0.0) ? xn : (alpha * (exp(xn / alpha) - 1.0));
+}
+
+static inline double lut_map_selu(double x, int side, void *ctx) {
+   (void)ctx;
+   const double alpha = 1.6732632423543772;
+   const double scale = 1.0507009873554805;
+   double xn = (side < 0) ? -x : x;
+   return (xn > 0.0) ? (scale * xn) : (scale * (alpha * (exp(xn) - 1.0)));
+}
+
+static inline double lut_map_swish(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return xn / (1.0 + exp(-xn));
+}
+
+static inline double lut_map_silu(double x, int side, void *ctx) {
+   return lut_map_swish(x, side, ctx);
+}
+
+static inline double lut_map_softsign(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return xn / (1.0 + fabs(xn));
+}
+
+static inline double lut_map_logsigmoid(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return -log1p(exp(-xn));
+}
+
+static inline double lut_map_hardsigmoid(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   double y = xn / 6.0 + 0.5;
+   return clamp(y, 0.0, 1.0);
+}
+
+static inline double lut_map_softplus(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return log1p(exp(xn));
+}
+
+static inline double lut_map_gelu(double x, int side, void *ctx) {
+   (void)ctx;
+   const double inv_sqrt2 = 0.7071067811865475;
+   double xn = (side < 0) ? -x : x;
+   return 0.5 * xn * (1.0 + erf(xn * inv_sqrt2));
+}
+
+static inline double lut_map_quick_gelu(double x, int side, void *ctx) {
+   (void)ctx;
+   const double k = 1.702;
+   double xn = (side < 0) ? -x : x;
+   return xn / (1.0 + exp(-k * xn));
+}
+
+static inline double lut_map_elu(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return (xn > 0.0) ? xn : (exp(xn) - 1.0);
+}
+
+static inline double lut_map_relu6(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   double y = xn;
+   return clamp(y, 0.0, 6.0);
+}
+
+static inline double lut_map_hardswish(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   double tmp = xn + 3.0;
+   tmp = clamp(tmp, 0.0, 6.0);
+   return xn * tmp / 6.0;
+}
+
+static inline double lut_map_mish(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return xn * tanh(log1p(exp(xn)));
+}
+
+static inline double lut_map_hardtanh(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   double y = xn;
+   return clamp(y, -1.0, 1.0);
+}
+
+static inline double lut_map_exp(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return exp(xn);
+}
+
+static inline double lut_map_exp2(double x, int side, void *ctx) {
+   (void)ctx;
+   double xn = (side < 0) ? -x : x;
+   return exp2(xn);
 }
 
 // static inline uint64_t EMIT(uint32_t reg, uint32_t value){
@@ -1673,25 +1942,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t sigmoid_lut[1026];
          static int sigmoid_lut_init = 0;
          if (!sigmoid_lut_init) {
-            const double index_scale = 2596.0;
-            const double step = 32.0 / index_scale;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = 1.0 / (1.0 + exp(x));
-               long q = lround(y * 32768.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               sigmoid_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = 1.0 / (1.0 + exp(-x));
-               long q = lround(y * 32768.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               sigmoid_lut[513 + i] = (uint16_t)q;
-            }
-            sigmoid_lut_init = 1;
+            init_lut_u16(sigmoid_lut, &sigmoid_lut_init, 2596.0, lut_map_sigmoid, NULL,
+                         lut_quant_q015_sigmoid);
          }
          lut_table = sigmoid_lut;
          lut_bn_mul_operand = 0x6912;
@@ -1704,25 +1956,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t tan_lut[1026];
          static int tan_lut_init = 0;
          if (!tan_lut_init) {
-            const double index_scale = 5216.0;
-            const double step = 32.0 / index_scale;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = -tanh(x);
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               tan_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = tanh(x);
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               tan_lut[513 + i] = (uint16_t)q;
-            }
-            tan_lut_init = 1;
+            init_lut_u16(tan_lut, &tan_lut_init, 5216.0, lut_map_tanh, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = tan_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -1734,25 +1969,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t sin_lut[1026];
          static int sin_lut_init = 0;
          if (!sin_lut_init) {
-            const double index_scale = 5216.0;
-            const double step = 32.0 / index_scale;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = -sin(x);
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               sin_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = sin(x);
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               sin_lut[513 + i] = (uint16_t)q;
-            }
-            sin_lut_init = 1;
+            init_lut_u16(sin_lut, &sin_lut_init, 5216.0, lut_map_sin, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = sin_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -1764,25 +1982,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t cos_lut[1026];
          static int cos_lut_init = 0;
          if (!cos_lut_init) {
-            const double index_scale = 5216.0;
-            const double step = 32.0 / index_scale;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = cos(x);
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               cos_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = cos(x);
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               cos_lut[513 + i] = (uint16_t)q;
-            }
-            cos_lut_init = 1;
+            init_lut_u16(cos_lut, &cos_lut_init, 5216.0, lut_map_cos, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = cos_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -1794,26 +1995,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t asin_lut[1026];
          static int asin_lut_init = 0;
          if (!asin_lut_init) {
-            const double index_scale = 16384.0;
-            const double step = 32.0 / index_scale;
-            const double inv_half_pi = 0.6366197723675813; // 2/pi to normalize into [-1, 1]
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = -asin(x) * inv_half_pi;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               asin_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = asin(x) * inv_half_pi;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               asin_lut[513 + i] = (uint16_t)q;
-            }
-            asin_lut_init = 1;
+            init_lut_u16(asin_lut, &asin_lut_init, 16384.0, lut_map_asin, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = asin_lut;
          lut_bn_mul_operand = 0x7400;
@@ -1825,26 +2008,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t acos_lut[1026];
          static int acos_lut_init = 0;
          if (!acos_lut_init) {
-            const double index_scale = 16384.0;
-            const double step = 32.0 / index_scale;
-            const double inv_pi = 0.3183098861837907; // 1/pi to normalize into [-1, 1]
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = (2.0 * acos(-x) * inv_pi) - 1.0;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               acos_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = (2.0 * acos(x) * inv_pi) - 1.0;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               acos_lut[513 + i] = (uint16_t)q;
-            }
-            acos_lut_init = 1;
+            init_lut_u16(acos_lut, &acos_lut_init, 16384.0, lut_map_acos, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = acos_lut;
          lut_bn_mul_operand = 0x7400;
@@ -1856,26 +2021,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t atan_lut[1026];
          static int atan_lut_init = 0;
          if (!atan_lut_init) {
-            const double index_scale = 5216.0;
-            const double step = 32.0 / index_scale;
-            const double inv_half_pi = 0.6366197723675813; // 2/pi to normalize into [-1, 1]
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = -atan(x) * inv_half_pi;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               atan_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = atan(x) * inv_half_pi;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               atan_lut[513 + i] = (uint16_t)q;
-            }
-            atan_lut_init = 1;
+            init_lut_u16(atan_lut, &atan_lut_init, 5216.0, lut_map_atan, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = atan_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -1887,26 +2034,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t asinh_lut[1026];
          static int asinh_lut_init = 0;
          if (!asinh_lut_init) {
-            const double index_scale = 5216.0;
-            const double step = 32.0 / index_scale;
-            const double inv_asinh_max = 0.2628363668683663; // 1 / asinh(32)
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = -asinh(x) * inv_asinh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               asinh_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = asinh(x) * inv_asinh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               asinh_lut[513 + i] = (uint16_t)q;
-            }
-            asinh_lut_init = 1;
+            init_lut_u16(asinh_lut, &asinh_lut_init, 5216.0, lut_map_asinh, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = asinh_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -1918,28 +2047,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t acosh_lut[1026];
          static int acosh_lut_init = 0;
          if (!acosh_lut_init) {
-            const double index_scale = 5216.0;
-            const double step = 32.0 / index_scale;
-            const double inv_acosh_max = 0.24046329466947597; // 1 / acosh(32)
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               if (x < 1.0) x = 1.0;
-               double y = acosh(x) * inv_acosh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               acosh_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               if (x < 1.0) x = 1.0;
-               double y = acosh(x) * inv_acosh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               acosh_lut[513 + i] = (uint16_t)q;
-            }
-            acosh_lut_init = 1;
+            init_lut_u16(acosh_lut, &acosh_lut_init, 5216.0, lut_map_acosh, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = acosh_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -1951,28 +2060,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static uint16_t atanh_lut[1026];
          static int atanh_lut_init = 0;
          if (!atanh_lut_init) {
-            const double index_scale = 16384.0;
-            const double step = 32.0 / index_scale;
-            const double inv_atanh_max = 0.2631439642242922; // 1 / atanh(0.999)
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               if (x > 0.999) x = 0.999;
-               double y = -atanh(x) * inv_atanh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               atanh_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               if (x > 0.999) x = 0.999;
-               double y = atanh(x) * inv_atanh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               atanh_lut[513 + i] = (uint16_t)q;
-            }
-            atanh_lut_init = 1;
+            init_lut_u16(atanh_lut, &atanh_lut_init, 16384.0, lut_map_atanh, NULL,
+                         lut_quant_q015_biased);
          }
          lut_table = atanh_lut;
          lut_bn_mul_operand = 0x7400;
@@ -1988,23 +2077,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double step = 32.0 / index_scale;
             const double max_x = 512.0 * step;
             const double inv_sinh_max = 1.0 / sinh(max_x);
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = -sinh(x) * inv_sinh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               sinh_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = sinh(x) * inv_sinh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               sinh_lut[513 + i] = (uint16_t)q;
-            }
-            sinh_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_sinh_max };
+            init_lut_u16(sinh_lut, &sinh_lut_init, index_scale, lut_map_sinh, &scale,
+                         lut_quant_q015_biased);
          }
          lut_table = sinh_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -2020,23 +2095,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double step = 32.0 / index_scale;
             const double max_x = 512.0 * step;
             const double inv_cosh_max = 1.0 / cosh(max_x);
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double y = cosh(x) * inv_cosh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               cosh_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = cosh(x) * inv_cosh_max;
-               long q = lround((y + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               cosh_lut[513 + i] = (uint16_t)q;
-            }
-            cosh_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_cosh_max };
+            init_lut_u16(cosh_lut, &cosh_lut_init, index_scale, lut_map_cosh, &scale,
+                         lut_quant_q015_biased);
          }
          lut_table = cosh_lut;
          lut_bn_mul_operand = 0x6d18;
@@ -2068,24 +2129,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = alpha * (exp(-max_x / alpha) - 1.0);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = (xn > 0.0) ? xn : (alpha * (exp(xn / alpha) - 1.0));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               celu_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = (x > 0.0) ? x : (alpha * (exp(x / alpha) - 1.0));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               celu_lut[513 + i] = (uint16_t)q;
-            }
-            celu_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(celu_lut, &celu_lut_init, index_scale, lut_map_celu, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(celu_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2105,24 +2151,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = scale * (alpha * (exp(-max_x) - 1.0));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = (xn > 0.0) ? (scale * xn) : (scale * (alpha * (exp(xn) - 1.0)));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               selu_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = (x > 0.0) ? (scale * x) : (scale * (alpha * (exp(x) - 1.0)));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               selu_lut[513 + i] = (uint16_t)q;
-            }
-            selu_lut_init = 1;
+            struct lut_scale_ctx scale_ctx = { .inv_scale = inv_scale };
+            init_lut_u16(selu_lut, &selu_lut_init, index_scale, lut_map_selu, &scale_ctx,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(selu_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2140,24 +2171,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x / (1.0 + exp(max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = xn / (1.0 + exp(-xn));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               swish_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = x / (1.0 + exp(-x));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               swish_lut[513 + i] = (uint16_t)q;
-            }
-            swish_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(swish_lut, &swish_lut_init, index_scale, lut_map_swish, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(swish_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2175,24 +2191,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x / (1.0 + max_x);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = xn / (1.0 + fabs(xn));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               softsign_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = x / (1.0 + fabs(x));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               softsign_lut[513 + i] = (uint16_t)q;
-            }
-            softsign_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(softsign_lut, &softsign_lut_init, index_scale, lut_map_softsign,
+                         &scale, lut_quant_q015_biased);
          }
          emit_lut_q015_tables(softsign_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2210,24 +2211,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -log1p(exp(max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = -log1p(exp(-xn));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               logsigmoid_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = -log1p(exp(-x));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               logsigmoid_lut[513 + i] = (uint16_t)q;
-            }
-            logsigmoid_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(logsigmoid_lut, &logsigmoid_lut_init, index_scale,
+                         lut_map_logsigmoid, &scale, lut_quant_q015_biased);
          }
          emit_lut_q015_tables(logsigmoid_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2245,28 +2231,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = fmin(1.0, fmax(0.0, -max_x / 6.0 + 0.5));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = xn / 6.0 + 0.5;
-               if (y < 0.0) y = 0.0;
-               if (y > 1.0) y = 1.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               hardsigmoid_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = x / 6.0 + 0.5;
-               if (y < 0.0) y = 0.0;
-               if (y > 1.0) y = 1.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               hardsigmoid_lut[513 + i] = (uint16_t)q;
-            }
-            hardsigmoid_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(hardsigmoid_lut, &hardsigmoid_lut_init, index_scale,
+                         lut_map_hardsigmoid, &scale, lut_quant_q015_biased);
          }
          emit_lut_q015_tables(hardsigmoid_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2284,24 +2251,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = log1p(exp(-max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = log1p(exp(xn));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               softplus_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = log1p(exp(x));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               softplus_lut[513 + i] = (uint16_t)q;
-            }
-            softplus_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(softplus_lut, &softplus_lut_init, index_scale,
+                         lut_map_softplus, &scale, lut_quant_q015_biased);
          }
          emit_lut_q015_tables(softplus_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2320,24 +2272,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = 0.5 * (-max_x) * (1.0 + erf(-max_x * inv_sqrt2));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = 0.5 * xn * (1.0 + erf(xn * inv_sqrt2));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               gelu_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = 0.5 * x * (1.0 + erf(x * inv_sqrt2));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               gelu_lut[513 + i] = (uint16_t)q;
-            }
-            gelu_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(gelu_lut, &gelu_lut_init, index_scale, lut_map_gelu, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(gelu_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2356,24 +2293,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x / (1.0 + exp(k * max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = xn / (1.0 + exp(-k * xn));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               quick_gelu_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = x / (1.0 + exp(-k * x));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               quick_gelu_lut[513 + i] = (uint16_t)q;
-            }
-            quick_gelu_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(quick_gelu_lut, &quick_gelu_lut_init, index_scale,
+                         lut_map_quick_gelu, &scale, lut_quant_q015_biased);
          }
          emit_lut_q015_tables(quick_gelu_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2391,24 +2313,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = exp(-max_x) - 1.0;
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = (xn > 0.0) ? xn : (exp(xn) - 1.0);
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               elu_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = (x > 0.0) ? x : (exp(x) - 1.0);
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               elu_lut[513 + i] = (uint16_t)q;
-            }
-            elu_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(elu_lut, &elu_lut_init, index_scale, lut_map_elu, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(elu_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2426,28 +2333,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = fmin(6.0, fmax(0.0, -max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = xn;
-               if (y < 0.0) y = 0.0;
-               if (y > 6.0) y = 6.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               relu6_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = x;
-               if (y < 0.0) y = 0.0;
-               if (y > 6.0) y = 6.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               relu6_lut[513 + i] = (uint16_t)q;
-            }
-            relu6_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(relu6_lut, &relu6_lut_init, index_scale, lut_map_relu6, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(relu6_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2465,30 +2353,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x * fmin(fmax(-max_x + 3.0, 0.0), 6.0) / 6.0;
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double tmp = xn + 3.0;
-               if (tmp < 0.0) tmp = 0.0;
-               if (tmp > 6.0) tmp = 6.0;
-               double y = xn * tmp / 6.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               hardswish_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double tmp = x + 3.0;
-               if (tmp < 0.0) tmp = 0.0;
-               if (tmp > 6.0) tmp = 6.0;
-               double y = x * tmp / 6.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               hardswish_lut[513 + i] = (uint16_t)q;
-            }
-            hardswish_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(hardswish_lut, &hardswish_lut_init, index_scale,
+                         lut_map_hardswish, &scale, lut_quant_q015_biased);
          }
          emit_lut_q015_tables(hardswish_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2506,24 +2373,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = -max_x * tanh(log1p(exp(-max_x)));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = xn * tanh(log1p(exp(xn)));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               mish_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = x * tanh(log1p(exp(x)));
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               mish_lut[513 + i] = (uint16_t)q;
-            }
-            mish_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(mish_lut, &mish_lut_init, index_scale, lut_map_mish, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(mish_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2541,28 +2393,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = fmin(1.0, fmax(-1.0, -max_x));
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = xn;
-               if (y < -1.0) y = -1.0;
-               if (y > 1.0) y = 1.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               hardtanh_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = x;
-               if (y < -1.0) y = -1.0;
-               if (y > 1.0) y = 1.0;
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               hardtanh_lut[513 + i] = (uint16_t)q;
-            }
-            hardtanh_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(hardtanh_lut, &hardtanh_lut_init, index_scale,
+                         lut_map_hardtanh, &scale, lut_quant_q015_biased);
          }
          emit_lut_q015_tables(hardtanh_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2580,24 +2413,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = exp(-max_x);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = exp(xn);
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               exp_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = exp(x);
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               exp_lut[513 + i] = (uint16_t)q;
-            }
-            exp_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(exp_lut, &exp_lut_init, index_scale, lut_map_exp, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(exp_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2615,24 +2433,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             const double max_neg = exp2(-max_x);
             double max_abs = fmax(fabs(max_pos), fabs(max_neg));
             double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)(512 - i) * step;
-               double xn = -x;
-               double y = exp2(xn);
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               exp2_lut[i] = (uint16_t)q;
-            }
-            for (int i = 0; i <= 512; ++i) {
-               double x = (double)i * step;
-               double y = exp2(x);
-               long q = lround((y * inv_scale + 1.0) * 16384.0);
-               if (q < 0) q = 0;
-               if (q > 32767) q = 32767;
-               exp2_lut[513 + i] = (uint16_t)q;
-            }
-            exp2_lut_init = 1;
+            struct lut_scale_ctx scale = { .inv_scale = inv_scale };
+            init_lut_u16(exp2_lut, &exp2_lut_init, index_scale, lut_map_exp2, &scale,
+                         lut_quant_q015_biased);
          }
          emit_lut_q015_tables(exp2_lut);
          emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
@@ -2645,25 +2448,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          static int silu_lut_init = 0;
          if (!silu_lut_init) {
             const double index_scale = 2824.0;
-            const double step = 32.0 / index_scale;
             const double output_scale = 5664.8;
-            for (int i = 0; i < lut_entries; ++i) {
-               double x = (double)(lut_entries - 1 - i) * step;
-               double y = -x / (1.0 + exp(x));
-               long q = lround(y * output_scale);
-               if (q < -32768) q = -32768;
-               if (q > 32767) q = 32767;
-               silu_lut[i] = (int16_t)q;
-            }
-            for (int i = 0; i < lut_entries; ++i) {
-               double x = (double)i * step;
-               double y = x / (1.0 + exp(-x));
-               long q = lround(y * output_scale);
-               if (q < -32768) q = -32768;
-               if (q > 32767) q = 32767;
-               silu_lut[lut_entries + i] = (int16_t)q;
-            }
-            silu_lut_init = 1;
+            init_lut_s16(silu_lut, &silu_lut_init, lut_entries, index_scale,
+                         lut_map_silu, (void *)&output_scale, lut_quant_s16_scale);
          }
          EMIT(REG_DPU_LUT_ACCESS_CFG,
               DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |

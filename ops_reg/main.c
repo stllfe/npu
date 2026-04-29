@@ -6734,9 +6734,6 @@ int main(int argc, char **argv) {
     printf("Unknown test '%s'\n", argv[1]);
     return -1;
   }
-  // test_conv2d(argc, argv);
-  // test_globalavgpool(argc, argv);
-  // test_globalminpool(argc, argv);
   // test_globalmaxpool(argc, argv);
   return 0;
 }
