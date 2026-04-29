@@ -1041,7 +1041,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             out_width_stride = out_atoms;
          }
          int data_in_channel_real = conv_in_channels > 0 ? conv_in_channels - 1 : 0;
-         int data_in_channel_aligned = align_c;
+         int data_in_channel_aligned = 0;
          int dataout_width = out_w;
          int dataout_atomics = dataout_width * out_h;
          int aligned_in_channels = ((conv_in_channels + align_c - 1) / align_c) * align_c;
@@ -1070,21 +1070,18 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          if (( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
             width_stride = in_w;
-            data_in_channel_aligned = 16;
             weight_bytes_per_kernel = 288; 
             align_c = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
          }
          else if ( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1) {
-            data_in_channel_aligned = 16;
             weight_bytes_per_kernel = 32; 
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             align_c = 16;
          }
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
             conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==3 && conv_kernel_w==3) {
-            data_in_channel_aligned = 8;
             weight_bytes_per_kernel = 144; 
          }
          else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
@@ -1096,7 +1093,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          else if ( conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
             conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) {
             conv_con1 |= CNA_CONV_CON1_CONV_MODE(3);
-            data_in_channel_aligned = 32;
             weight_kernels = 1;
             align_c = 32;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
@@ -1105,7 +1101,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          else if ( conv_batch==1 && conv_in_channels==15 && in_h==5 && in_w==5 &&
             conv_out_channels==35 && weight_in_channels==3 && conv_kernel_h==3 && conv_kernel_w==3) {
             width_stride = 5;
-            data_in_channel_aligned = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             align_c = 16 ;
          }
@@ -1119,6 +1114,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
             out_channel_field = 31;
          }
+
+         // Align channel count to NC1HWC2 pack factor.
+         data_in_channel_aligned = align_up_int(conv_in_channels, align_c);
+         if (data_in_channel_aligned < align_c) data_in_channel_aligned = align_c;
 
          // Feature grains: target one extra row, cap by ~2 CBUF banks.
          int feature_grains = in_h + conv_kernel_h;
