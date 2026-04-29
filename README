@@ -137,7 +137,7 @@ dataout_atomics = dataout_width * dataout_height
 ```
 
 Feature Grains
-TRM: Feature data rows needs to be buffered before convolution start. It's suggested to set this field as y_stride+weight_height+1.
+TRM: Feature data rows needs to be buffered before convolution start. Its suggested to set this field as y_stride+weight_height+1.
 In matmul mode this over-buffers rows so the whole MxK block fits, which is why M+1 is used instead of the TRM minimum.
 ```
 feature_grains = M + 1
@@ -314,6 +314,13 @@ failed to allocate handle, ret: -1, errno: 14, errstr: Bad address and need rebo
 - 100 times on rknn no problem
 - mem_destroy was called with input_dma instead of the required input_obj, so the input buffer never got destroyed.
 - munmap was given non‑page‑aligned sizes (e.g., 133,350,848 bytes), which typically fails silently and leaves VMAs mapped; over many loops this leaks address space/resources. mem_create/mmap also used unaligned sizes.
+
+
+# How to do conv2d in RK3588
+cna_cvt_con5
+TRM: per_channel_cvt_en convert enable. Per channel enable CVT function. Int 4 has 32 channels in total for 128 bits. Int 8 16 channel...
+
+
 
 # Reference
 https://github.com/nvdla/sw

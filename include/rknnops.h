@@ -1052,14 +1052,18 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             conv_batch, conv_in_channels, in_h, in_w,
             conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
 
-         int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2);
+         const int conv_in_precision = 2;
+         const int conv_proc_precision = 2;
+         int conv_con1 =
+            CNA_CONV_CON1_PROC_PRECISION(conv_proc_precision) |
+            CNA_CONV_CON1_IN_PRECISION(conv_in_precision);
          if ((conv_in_channels >= 1 && conv_in_channels <= 4) && !(conv_groups == conv_in_channels && conv_out_channels == conv_in_channels)) {
             conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(7 + conv_in_channels);
          }
          int line_stride = 0;
          int surf_stride = 0;
          int cvt_con0 = CNA_CVT_CON0_CVT_BYPASS(1) ;
-         int cv5_con5 = 0x00000fff;
+         int cv5_con5 = 0;
          int weight_kernels = 0 ;
          int core_misc_cfg = CORE_MISC_CFG_PROC_PRECISION(2);
 
@@ -1070,7 +1074,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             weight_bytes_per_kernel = 288; 
             align_c = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
-            cv5_con5 = 0;
          }
          else if ( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1) {
@@ -1078,21 +1081,17 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             weight_bytes_per_kernel = 32; 
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             align_c = 16;
-            cv5_con5 = 0;
          }
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
             conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==3 && conv_kernel_w==3) {
             data_in_channel_aligned = 8;
             weight_bytes_per_kernel = 144; 
-            cv5_con5 = 0x0000ffff;
          }
          else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
             conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
-            cv5_con5 = 0x0000ffff;
          }
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==1 && in_w==1 &&
             conv_out_channels==2 && weight_in_channels==2 && conv_kernel_h==1 && conv_kernel_w==1) {
-            cv5_con5 = 0x0000ffff;
          }
          else if ( conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
             conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) {
@@ -1102,7 +1101,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             align_c = 32;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
-            cv5_con5 = 0;
          }
          else if ( conv_batch==1 && conv_in_channels==15 && in_h==5 && in_w==5 &&
             conv_out_channels==35 && weight_in_channels==3 && conv_kernel_h==3 && conv_kernel_w==3) {
@@ -1110,7 +1108,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             data_in_channel_aligned = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             align_c = 16 ;
-            cv5_con5 = 0;
          }
          else if ( conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
             conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
@@ -1119,7 +1116,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             // width_stride = 28;
             weight_kernels = 1;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
-            cv5_con5 = 0;
             core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
             out_channel_field = 31;
          }
@@ -1157,6 +1153,22 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
                surf_stride = width_stride * (in_h - 4);
             }
          }
+
+         int cvt_bits_per_elem = 16;
+         if (conv_in_precision == 6) {
+            cvt_bits_per_elem = 4;
+         } else if (conv_in_precision == 0) {
+            cvt_bits_per_elem = 8;
+         } else if (conv_in_precision == 7) {
+            cvt_bits_per_elem = 32;
+         }
+         int cvt_lanes = 128 / cvt_bits_per_elem;
+         if (cvt_lanes < 1) cvt_lanes = 1;
+         int cvt_active = use_nhwc_pack ? conv_in_channels : input_pack_c2;
+         if (cvt_active < 1) cvt_active = 1;
+         if (cvt_active > cvt_lanes) cvt_active = cvt_lanes;
+         uint32_t cvt_mask = (cvt_active >= 32) ? 0xffffffffu : ((1u << cvt_active) - 1u);
+         cv5_con5 = (int)cvt_mask;
 
          // Derive data_entries from row granularity; 8-channel paths scale by height.
          int row_entries = (width_stride * align_c + 31) / 32;
