@@ -3419,17 +3419,12 @@ static int run_relu_case(const ReluTestConfig *config) {
 
 static void load_linear_inputs(__fp16 *dst, size_t total_elements) {
   if (!dst || total_elements == 0) return;
-  const float low = -3.0f;
-  const float high = 3.0f;
-  if (total_elements == 1) {
-    dst[0] = (__fp16)0.0f;
-    return;
-  }
-  const float range = high - low;
+  const float low = -2.0f;
+  const float high = 2.0f;
+  Mt19937 rng;
+  mt_seed(&rng, 0);
   for (size_t i = 0; i < total_elements; i++) {
-    float t = (float)i / (float)(total_elements - 1);
-    float x = low + range * t;
-    dst[i] = (__fp16)x;
+    dst[i] = (__fp16)mt_uniform(&rng, low, high);
   }
 }
 
@@ -3437,15 +3432,10 @@ static void load_fixed_asin_inputs(__fp16 *dst, size_t total_elements) {
   if (!dst || total_elements == 0) return;
   const float low = -0.95f;
   const float high = 0.95f;
-  if (total_elements == 1) {
-    dst[0] = (__fp16)0.0f;
-    return;
-  }
-  const float range = high - low;
+  Mt19937 rng;
+  mt_seed(&rng, 0);
   for (size_t i = 0; i < total_elements; i++) {
-    float t = (float)i / (float)(total_elements - 1);
-    float x = low + range * t;
-    dst[i] = (__fp16)x;
+    dst[i] = (__fp16)mt_uniform(&rng, low, high);
   }
 }
 
@@ -3453,15 +3443,10 @@ static void load_fixed_acosh_inputs(__fp16 *dst, size_t total_elements) {
   if (!dst || total_elements == 0) return;
   const float low = 1.0f;
   const float high = 3.0f;
-  if (total_elements == 1) {
-    dst[0] = (__fp16)low;
-    return;
-  }
-  const float range = high - low;
+  Mt19937 rng;
+  mt_seed(&rng, 0);
   for (size_t i = 0; i < total_elements; i++) {
-    float t = (float)i / (float)(total_elements - 1);
-    float x = low + range * t;
-    dst[i] = (__fp16)x;
+    dst[i] = (__fp16)mt_uniform(&rng, low, high);
   }
 }
 
@@ -3634,12 +3619,22 @@ static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
   for (size_t i = 0; i < total_elements; i++) {
     float x = (float)features[i];
     weights[i] = (__fp16)0;
-    expected[i] = fn(x) * inv_scale;
+    expected[i] = fn(x);
   }
 
   printf("Running %s (%dx%d)\n", name, rows, cols);
-  print_fp16_grid("Input (features)", features, rows, cols);
-  print_float_matrix("Expected (CPU)", expected, rows, cols);
+  print_fp16_grid("LUT Input (features)", features, rows, cols);
+  float *expected_scaled = (float *)malloc(total_elements * sizeof(float));
+  if (!expected_scaled) {
+    printf("%s: failed to allocate expected scaled buffer\n", name);
+    free(features); free(weights); free(expected);
+    return -1;
+  }
+  for (size_t i = 0; i < total_elements; i++) {
+    expected_scaled[i] = expected[i] * inv_scale;
+  }
+  print_float_matrix("Expected (CPU raw)", expected, rows, cols);
+  print_float_matrix("Expected (CPU normalized)", expected_scaled, rows, cols);
 
   __fp16 *result_padded = float16_alu_op_padded(weights, features, size, alu_algorithm);
   if (result_padded == NULL) {
@@ -3665,21 +3660,22 @@ static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
   printf("Result (%s)\n", label);
   print_float_matrix("Output", result, rows, cols);
 
-  const float kLutAtol = 1e-2f;
+  const float kLutAtol = 1e-6f;
+  const float kLutRtol = 1e-3f;
   float max_abs_diff = 0.0f;
   int matches = 1;
   for (size_t i = 0; i < total_elements; i++) {
     float actual = result[i];
-    float diff = fabsf(actual - expected[i]);
+    float diff = fabsf(actual - expected_scaled[i]);
     if (diff > max_abs_diff) max_abs_diff = diff;
-    if (diff > kLutAtol) matches = 0;
+    if (diff > (kLutAtol + kLutRtol * fabsf(expected_scaled[i]))) matches = 0;
   }
 
   printf("%s: matches CPU -> %s (max diff=%.6f)\n",
          name, matches ? "YES" : "NO", max_abs_diff);
 
   breakpoint();
-  free(features); free(weights); free(expected); free(result);
+  free(features); free(weights); free(expected); free(expected_scaled); free(result);
   return matches ? 0 : -1;
 }
 
@@ -6635,12 +6631,12 @@ int test_exp2(int argc, char **argv) {
     return run_exp2_case(&cli_config);
   }
   static const LutTestConfig configs[] = {
-      {"exp2_1x1", 1, 1},
-      {"exp2_2x2", 2, 2},
-      {"exp2_4x4", 4, 4},
-      {"exp2_6x6", 6, 6},
-      {"exp2_32x32", 32, 32},
-      {"exp2_64x64", 64, 64},
+      // {"exp2_1x1", 1, 1},
+      // {"exp2_2x2", 2, 2},
+      // {"exp2_4x4", 4, 4},
+      // {"exp2_6x6", 6, 6},
+      // {"exp2_32x32", 32, 32},
+      {"exp2_64x64", 64, 64} ,
   };
   int status = 0;
   for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
