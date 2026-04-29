@@ -6,6 +6,16 @@
 #include <string.h>
 #include "rknnops.h"
 
+static int init_fp16_matrix_case(const char *name, int rows_in, int cols_in,
+    int *rows, int *cols, size_t *total_elements, int *size,
+    __fp16 **features, __fp16 **weights);
+static int init_fp16_matrix_case_relu(const char *name, int rows_in, int cols_in,
+    int *rows, int *cols, size_t *total_elements, int *size,
+    __fp16 **features, __fp16 **weights);
+static int init_fp16_pair_case(const char *name, int rows_in, int cols_in,
+    int *rows, int *cols, size_t *total_elements, int *size,
+    __fp16 **a, __fp16 **b);
+
 static void unpack_nc1hwc2_fp16(const __fp16 *src, float *dst,
     int batch, int channels, int height, int width,
     int c2, int width_stride) {
@@ -611,24 +621,17 @@ typedef struct {
 
 static float roundoff_ref(float in_val);
 
-	static int run_div_case(const DivTestConfig *config) {
+static int run_div_case(const DivTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "div_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(a);
-    free(b);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
 
@@ -705,17 +708,17 @@ static float roundoff_ref(float in_val);
 static int run_idiv_case(const DivTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "idiv_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
 
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *div_unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *offset = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *rounddown_stage = (__fp16*)malloc(total_elements * sizeof(__fp16));
@@ -723,8 +726,8 @@ static int run_idiv_case(const DivTestConfig *config) {
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *expected_fp16 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   float *result_fp32 = (float*)malloc(total_elements * sizeof(float));
-  if (!a || !b || !div_unpacked || !offset || !rounddown_stage ||
-      !weights || !unpacked || !expected_fp16 || !result_fp32) {
+  if (!div_unpacked || !offset || !rounddown_stage || !weights ||
+      !unpacked || !expected_fp16 || !result_fp32) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(div_unpacked); free(offset); free(rounddown_stage);
     free(weights); free(unpacked); free(expected_fp16); free(result_fp32);
@@ -1342,21 +1345,20 @@ static int run_globalavgpool_case(const AvgpoolTestConfig *config) {
 static int run_cmplt_case(const CmpltTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "cmplt_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
+  int rows = 0;
+  int cols = 0;
   int a_broadcast_cols = config->a_broadcast_cols;
   int b_broadcast_cols = config->b_broadcast_cols;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -1496,21 +1498,20 @@ static int run_cmplt_case(const CmpltTestConfig *config) {
 static int run_cmpgt_case(const CmpltTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "cmpgt_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
+  int rows = 0;
+  int cols = 0;
   int a_broadcast_cols = config->a_broadcast_cols;
   int b_broadcast_cols = config->b_broadcast_cols;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -1650,21 +1651,20 @@ static int run_cmpgt_case(const CmpltTestConfig *config) {
 static int run_cmpge_case(const CmpltTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "cmpge_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
+  int rows = 0;
+  int cols = 0;
   int a_broadcast_cols = config->a_broadcast_cols;
   int b_broadcast_cols = config->b_broadcast_cols;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -1803,21 +1803,20 @@ static int run_cmpge_case(const CmpltTestConfig *config) {
 static int run_cmple_case(const CmpltTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "cmple_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
+  int rows = 0;
+  int cols = 0;
   int a_broadcast_cols = config->a_broadcast_cols;
   int b_broadcast_cols = config->b_broadcast_cols;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -1956,19 +1955,18 @@ static int run_cmple_case(const CmpltTestConfig *config) {
 static int run_cmpeq_case(const CmpeqTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "cmpeq_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -2115,19 +2113,18 @@ static int run_cmpeq_case(const CmpeqTestConfig *config) {
 static int run_add_case(const AddTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "add_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -2181,19 +2178,18 @@ static int run_add_case(const AddTestConfig *config) {
 static int run_mul_case(const MulTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "mul_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -2248,24 +2244,23 @@ static int run_mul_case(const MulTestConfig *config) {
 static int run_where_case(const WhereTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "where_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *mask = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *stage1 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *stage2 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *stage3 = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *zeros = (__fp16*)calloc(total_elements, sizeof(__fp16));
-  if (!a || !b || !mask || !stage1 || !stage2 || !stage3 || !unpacked || !zeros) {
+  if (!mask || !stage1 || !stage2 || !stage3 || !unpacked || !zeros) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(mask); free(stage1); free(stage2); free(stage3); free(unpacked); free(zeros);
     return -1;
@@ -2558,19 +2553,18 @@ static int run_roundoff_case(const RoundoffTestConfig *config) {
 static int run_max_case(const MaxTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "max_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -2625,19 +2619,18 @@ static int run_max_case(const MaxTestConfig *config) {
 static int run_minus_case(const MinusTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "minus_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -2700,19 +2693,18 @@ static int run_minus_case(const MinusTestConfig *config) {
 static int run_neg_case(const NegTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "neg_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > 65536) {
-    printf("%s: invalid element count %zu\n", name, total_elements);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *a = NULL;
+  __fp16 *b = NULL;
+  if (!init_fp16_pair_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &a, &b)) {
     return -1;
   }
-  int size = (int)total_elements;
-
-  __fp16 *a = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *b = (__fp16*)malloc(total_elements * sizeof(__fp16));
   __fp16 *unpacked = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!a || !b || !unpacked) {
+  if (!unpacked) {
     printf("%s: failed to allocate %zu elements\n", name, total_elements);
     free(a); free(b); free(unpacked);
     return -1;
@@ -3353,26 +3345,14 @@ typedef struct {
 static int run_relu_case(const ReluTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "relu_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  if (total_elements > INT_MAX) {
-    printf("%s: shape %dx%d exceeds %d elements\n",
-        name, rows, cols, INT_MAX);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16*)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case_relu(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   printf("%s: allocated %zu elements\n", name, total_elements);
@@ -3638,25 +3618,94 @@ static float lut_ref_inv_scale(LutRefFn fn, float max_x) {
   return 1.0f;
 }
 
+static int init_fp16_matrix_case_impl(const char *name, int rows_in, int cols_in,
+    int *rows, int *cols, size_t *total_elements, int *size,
+    __fp16 **features, __fp16 **weights, int overflow_is_invalid_shape) {
+  int r = rows_in > 0 ? rows_in : 1;
+  int c = cols_in > 0 ? cols_in : 1;
+  size_t total = (size_t)r * c;
+  if (total == 0) {
+    printf("%s: invalid shape %dx%d\n", name, r, c);
+    return 0;
+  }
+  if (total > INT_MAX) {
+    if (overflow_is_invalid_shape) {
+      printf("%s: invalid shape %dx%d\n", name, r, c);
+    } else {
+      printf("%s: shape %dx%d exceeds %d elements\n", name, r, c, INT_MAX);
+    }
+    return 0;
+  }
+  __fp16 *feat = (__fp16 *)malloc(total * sizeof(__fp16));
+  __fp16 *wts = (__fp16 *)malloc(total * sizeof(__fp16));
+  if (!feat || !wts) {
+    printf("%s: failed to allocate %zu elements\n", name, total);
+    free(feat);
+    free(wts);
+    return 0;
+  }
+  if (rows) *rows = r;
+  if (cols) *cols = c;
+  if (total_elements) *total_elements = total;
+  if (size) *size = (int)total;
+  if (features) *features = feat;
+  if (weights) *weights = wts;
+  return 1;
+}
+
+static int init_fp16_matrix_case(const char *name, int rows_in, int cols_in,
+    int *rows, int *cols, size_t *total_elements, int *size,
+    __fp16 **features, __fp16 **weights) {
+  return init_fp16_matrix_case_impl(name, rows_in, cols_in, rows, cols,
+      total_elements, size, features, weights, 1);
+}
+
+static int init_fp16_matrix_case_relu(const char *name, int rows_in, int cols_in,
+    int *rows, int *cols, size_t *total_elements, int *size,
+    __fp16 **features, __fp16 **weights) {
+  return init_fp16_matrix_case_impl(name, rows_in, cols_in, rows, cols,
+      total_elements, size, features, weights, 0);
+}
+
+static int init_fp16_pair_case(const char *name, int rows_in, int cols_in,
+    int *rows, int *cols, size_t *total_elements, int *size,
+    __fp16 **a, __fp16 **b) {
+  int r = rows_in > 0 ? rows_in : 1;
+  int c = cols_in > 0 ? cols_in : 1;
+  size_t total = (size_t)r * c;
+  if (total == 0 || total > 65536) {
+    printf("%s: invalid element count %zu\n", name, total);
+    return 0;
+  }
+  __fp16 *lhs = (__fp16 *)malloc(total * sizeof(__fp16));
+  __fp16 *rhs = (__fp16 *)malloc(total * sizeof(__fp16));
+  if (!lhs || !rhs) {
+    printf("%s: failed to allocate %zu elements\n", name, total);
+    free(lhs);
+    free(rhs);
+    return 0;
+  }
+  if (rows) *rows = r;
+  if (cols) *cols = c;
+  if (total_elements) *total_elements = total;
+  if (size) *size = (int)total;
+  if (a) *a = lhs;
+  if (b) *b = rhs;
+  return 1;
+}
+
 static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
     const char *label, LutRefFn fn) {
   if (!config || !fn) return -1;
   const char *name = config->name ? config->name : "lut_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -3815,21 +3864,14 @@ static float ref_exp2(float x) {
 static int run_silu_case(const SiluTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "silu_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -3996,21 +4038,14 @@ static int run_silu_case(const SiluTestConfig *config) {
 static int run_sigmoid_case(const SigmoidTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "sigmoid_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4083,21 +4118,14 @@ static int run_sigmoid_case(const SigmoidTestConfig *config) {
 static int run_sin_case(const SinTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "sin_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4171,21 +4199,14 @@ static int run_sin_case(const SinTestConfig *config) {
 static int run_tan_case(const TanTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "tan_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4259,21 +4280,14 @@ static int run_tan_case(const TanTestConfig *config) {
 static int run_cos_case(const CosTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "cos_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4411,21 +4425,14 @@ static int run_exp2_case(const LutTestConfig *config) {
 static int run_asin_case(const AsinTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "asin_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4501,21 +4508,14 @@ static int run_asin_case(const AsinTestConfig *config) {
 static int run_acos_case(const AcosTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "acos_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4591,21 +4591,14 @@ static int run_acos_case(const AcosTestConfig *config) {
 static int run_atan_case(const AtanTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "atan_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4681,21 +4674,14 @@ static int run_atan_case(const AtanTestConfig *config) {
 static int run_asinh_case(const AsinhTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "asinh_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4771,21 +4757,14 @@ static int run_asinh_case(const AsinhTestConfig *config) {
 static int run_acosh_case(const AcoshTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "acosh_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4861,21 +4840,14 @@ static int run_acosh_case(const AcoshTestConfig *config) {
 static int run_sinh_case(const SinhTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "sinh_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -4954,21 +4926,14 @@ static int run_sinh_case(const SinhTestConfig *config) {
 static int run_cosh_case(const CoshTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "cosh_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -5047,21 +5012,14 @@ static int run_cosh_case(const CoshTestConfig *config) {
 static int run_tanh_case(const TanhTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "tanh_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
@@ -5135,21 +5093,14 @@ static int run_tanh_case(const TanhTestConfig *config) {
 static int run_atanh_case(const AtanhTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "atanh_case";
-  int rows = config->rows > 0 ? config->rows : 1;
-  int cols = config->cols > 0 ? config->cols : 1;
-  size_t total_elements = (size_t)rows * cols;
-  if (total_elements == 0 || total_elements > INT_MAX) {
-    printf("%s: invalid shape %dx%d\n", name, rows, cols);
-    return -1;
-  }
-  int size = (int)total_elements;
-
-  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
-  if (!features || !weights) {
-    printf("%s: failed to allocate %zu elements\n", name, total_elements);
-    free(features);
-    free(weights);
+  int rows = 0;
+  int cols = 0;
+  size_t total_elements = 0;
+  int size = 0;
+  __fp16 *features = NULL;
+  __fp16 *weights = NULL;
+  if (!init_fp16_matrix_case(name, config->rows, config->cols,
+        &rows, &cols, &total_elements, &size, &features, &weights)) {
     return -1;
   }
   float *expected = (float *)malloc(total_elements * sizeof(float));
