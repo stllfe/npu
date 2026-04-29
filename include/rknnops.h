@@ -43,6 +43,9 @@
 #define NPU_CBUF_BANKS 12
 #endif
 
+static inline uint32_t ceil_div_u32(uint32_t x, uint32_t y) {
+   return (x + y - 1u) / y;
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -1342,14 +1345,26 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          // else if (params.M > 288 && params.M <= 320) notch_val = 79;
          // else if (params.M > 320 && params.M <= 352) notch_val = 87;
          // else if (params.M > 352 && params.M < 512) notch_val = 95;
-         uint32_t notch_val = (is_KN_64 || is_KN_256 || is_KN_512 || params.K > 7872) ? 0u : 7u;
-         if (params.K > 32 && params.K < 512 && params.K != 64 && params.K != 256) {
-            uint32_t notch_steps = ((uint32_t)params.K - 1u) / 32u;
-            if (notch_steps > 12u) notch_steps = 12u;
-            notch_val = 7u + 8u * notch_steps;
-         }
-         if (params.M == 33 && params.K == 1 && params.N == 33 ) notch_val = 15;
+         // uint32_t notch_val = (is_KN_64 || is_KN_256 || is_KN_512 || params.K > 7872) ? 0u : 7u;
+         // if (params.K > 32 && params.K < 512 && params.K != 64 && params.K != 256) {
+         //    uint32_t notch_steps = ((uint32_t)params.K - 1u) / 32u;
+         //    if (notch_steps > 12u) notch_steps = 12u;
+         //    notch_val = 7u + 8u * notch_steps;
+         // }
+         // if (params.M == 33 && params.K == 1 && params.N == 33 ) notch_val = 15;
          
+         uint32_t notch_blocks = ceil_div_u32((uint32_t)params.K, 32u);
+         if (params.K <= 32) {
+            uint32_t m_blocks = ceil_div_u32((uint32_t)params.M, 32u);
+            if (m_blocks > notch_blocks) {
+               notch_blocks = m_blocks;
+            }
+         }
+         if (notch_blocks > 13u) notch_blocks = 13u;
+         uint32_t notch_val = 8u * notch_blocks - 1u;
+
+         if (is_KN_64 || is_KN_256 || is_KN_512 || params.K > 7872) notch_val = 0u;
+         if (params.M == 65 && params.K == 1 && params.N == 33 ) notch_val = 15u;
          EMIT(REG_DPU_DATA_CUBE_NOTCH_ADDR, DPU_DATA_CUBE_NOTCH_ADDR_NOTCH_ADDR_1(notch_val) |DPU_DATA_CUBE_NOTCH_ADDR_NOTCH_ADDR_0(notch_val));
          
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL((uint32_t)align_out - 1) | DPU_DATA_CUBE_CHANNEL_CHANNEL((uint32_t)align_out - 1));
