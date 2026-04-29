@@ -883,17 +883,20 @@ static void pack_conv_weights_fp16(__fp16 *dst, const __fp16 *src,
       {2, 0, 1, 3, 4},
       {0, 1, 2, 3, 4},
    };
-   size_t kernel_stride = (size_t)kernel_h * kernel_w * c2_out;
+   int in_c1 = (in_channels + c2_out - 1) / c2_out;
+   size_t spatial_stride = (size_t)c2_out * (size_t)in_c1;
+   size_t kernel_stride = (size_t)kernel_h * kernel_w * spatial_stride;
    if (use_2x3_kh_major || use_2x5_kh_major || use_3x1_kh_major || use_3x3_kh_major ||
        use_3x5_kh_major || use_2x1_kh_major || use_16x16_3x3_kh_major) {
       for (int kh = 0; kh < kernel_h; kh++) {
          for (int kw = 0; kw < kernel_w; kw++) {
-            size_t dst_khkw_base = ((size_t)kh * kernel_w + kw) * out_channels * (size_t)c2_out;
+            size_t dst_khkw_base = ((size_t)kh * kernel_w + kw) * (size_t)out_channels * spatial_stride;
             for (int oc = 0; oc < out_channels; oc++) {
-               size_t dst_spatial_base = dst_khkw_base + (size_t)oc * c2_out;
+               size_t dst_spatial_base = dst_khkw_base + (size_t)oc * spatial_stride;
                for (int ic = 0; ic < in_channels; ic++) {
                   size_t src_idx = (((size_t)oc * in_channels + ic) * kernel_h + kh) * kernel_w + kw;
-                  dst[dst_spatial_base + ic] = src[src_idx];
+                  size_t dst_idx = dst_spatial_base + (size_t)(ic / c2_out) * c2_out + (size_t)(ic % c2_out);
+                  dst[dst_idx] = src[src_idx];
                }
             }
          }
@@ -905,12 +908,13 @@ static void pack_conv_weights_fp16(__fp16 *dst, const __fp16 *src,
       size_t dst_kernel_base = (size_t)oc * kernel_stride;
       for (int kh = 0; kh < kernel_h; kh++) {
          for (int kw = 0; kw < kernel_w; kw++) {
-            size_t dst_spatial_base = dst_kernel_base + ((size_t)kh * kernel_w + kw) * c2_out;
+            size_t dst_spatial_base = dst_kernel_base + ((size_t)kh * kernel_w + kw) * spatial_stride;
             for (int ic = 0; ic < in_channels; ic++) {
+               size_t dst_idx = dst_spatial_base + (size_t)(ic / c2_out) * c2_out + (size_t)(ic % c2_out);
                // 6x3x2x3: replicate first row across height.
                if (use_6x3x2x3_map) {
                   size_t src_idx = (((size_t)src_oc * in_channels + ic) * kernel_h + 0) * kernel_w + kw;
-                  dst[dst_spatial_base + ic] = src[src_idx];
+                  dst[dst_idx] = src[src_idx];
                   continue;
                }
                // 6x3x2x5: apply the per-OC remap observed in RKNN dump.
@@ -919,11 +923,11 @@ static void pack_conv_weights_fp16(__fp16 *dst, const __fp16 *src,
                   int mapped_kh = kh == 0 ? 0 : 1;
                   int mapped_kw = kh == 0 ? map_2x5_kh0[oc][kw] : map_2x5_kh1[oc][kw];
                   size_t src_idx = (((size_t)mapped_oc * in_channels + ic) * kernel_h + mapped_kh) * kernel_w + mapped_kw;
-                  dst[dst_spatial_base + ic] = src[src_idx];
+                  dst[dst_idx] = src[src_idx];
                   continue;
                }
                size_t src_idx = (((size_t)src_oc * in_channels + ic) * kernel_h + kh) * kernel_w + kw;
-               dst[dst_spatial_base + ic] = src[src_idx];
+               dst[dst_idx] = src[src_idx];
             }
          }
       }
@@ -997,7 +1001,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int data_in_channel_aligned = align_c;
          int dataout_width = out_w;
          int dataout_atomics = dataout_width * out_h;
-         int weight_bytes_per_kernel = conv_kernel_h * conv_kernel_w * align_c * sizeof(__fp16);
+         int aligned_in_channels = ((conv_in_channels + align_c - 1) / align_c) * align_c;
+         int weight_bytes_per_kernel = conv_kernel_h * conv_kernel_w * aligned_in_channels * sizeof(__fp16);
          int weight_bytes_total = weight_bytes_per_kernel * conv_out_channels;
          int surface_add = out_width_stride * 2;
          int cbuf_entries = dataout_atomics * 2;
@@ -1070,6 +1075,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          }
          int line_stride = 0;
          int cvt_con0 = CNA_CVT_CON0_CVT_BYPASS(1) ;
+         int cv5_con5 = 0x00000fff;
 
          if (( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
@@ -1085,13 +1091,28 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             surf_stride = 252;
             align_c = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
+            cv5_con5 = 0;
+         }
+         else if ( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
+               conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1) {
+            feature_grains = 33;
+            data_in_channel_aligned = 16;
+            weight_bytes_per_kernel = 32; 
+            cbuf_entries = 16;
+            cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
+            line_stride = 128;
+            surf_stride = 896;
+            align_c = 16;
+            cv5_con5 = 0;
+            weight_bytes_total = 0x200;
          }
          
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
          int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2) ;
          if (!( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
-            conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
-
+            conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3) &&
+            !( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
+               conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1)) {
             int argb_in = 10;
             if (( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
                conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==1 && conv_kernel_w==1)) {
@@ -1127,11 +1148,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_CNA_FC_DATA_SIZE0, CNA_FC_DATA_SIZE0_DMA_WIDTH(in_w) | CNA_FC_DATA_SIZE0_DMA_HEIGHT(in_h));
          EMIT(REG_CNA_FC_DATA_SIZE1, CNA_FC_DATA_SIZE1_DMA_CHANNEL(align_c));
          EMIT(REG_CNA_DCOMP_ADDR0, CNA_DCOMP_ADDR0_DECOMPRESS_ADDR0(weights_dma + REGCMD_RESERVED));
-         int cv5_con5 = 0x00000fff;
-         if (conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18,
-            conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3) {
-            cv5_con5 = 0;
-         }
          EMIT(REG_CNA_CVT_CON5, cv5_con5);
          EMIT(REG_CORE_MISC_CFG, CORE_MISC_CFG_PROC_PRECISION(2));
          EMIT(REG_CORE_DATAOUT_SIZE_0, CORE_DATAOUT_SIZE_0_DATAOUT_HEIGHT(out_h - 1) | CORE_DATAOUT_SIZE_0_DATAOUT_WIDTH(out_w - 1));
@@ -4892,9 +4908,11 @@ __fp16* float16_conv2d(__fp16* input, __fp16* kernel, uint32_t alu_algorithm, in
             (size_t)((conv_in_channels + conv_align_c - 1) / conv_align_c) *
             conv_in_height * conv_width_stride * conv_align_c;
       }
+      size_t aligned_in_channels =
+         (size_t)((conv_in_channels + conv_align_c - 1) / conv_align_c) * (size_t)conv_align_c;
       size_t packed_weight_elems =
          (size_t)conv_out_channels *
-         conv_kernel_h * conv_kernel_w * conv_align_c;
+         conv_kernel_h * conv_kernel_w * aligned_in_channels;
       size_t packed_output_elems;
       if (conv_kernel_h == 1 && conv_kernel_w == 1) {
          packed_output_elems =
