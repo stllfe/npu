@@ -1,12 +1,14 @@
-#############
+############# silu.py
 
 # 0.195254 to fp16 = 0.1953125 (0x3240) * 2824 (0x69C4 fp16) = 0x4409e400 fp32 = 551.5625 
 # LUT[551.5625/32] = LUT[17.2] = 598 to 636 = (551.5625/32-17) * (636-598) + 598 = 607
 # 607 * 0.01329 * 0.01329 = 0.1072108287
-# silu(0.195254) = 0.1072108287
+# silu(0.195254) = 0.1071278659
 
 # 0.860757 * 2824 = 0x4517f030 = 2431.0117
 # LUT[2431.0117/32] = LUT[75.969115625] = 3372 to 3429  = ( 2431.0117/32 -75 ) * (3429-3372) + 3372 = 3427
+# 3427 * 0.01329 * 0.01329 = 0.6052907907
+# silu(0.860757) = 0.6049561924
 ###
 
 import re
@@ -111,7 +113,6 @@ if __name__ == "__main__":
     print(f"Loaded SiLU LUT from {SILU_LUT_PATH} with {len(silu_lut)} entries")
     print("Testing hardware SiLU approximation (direct LUT read):")
 
-    tol = 1.2e-2
     hw_vals = []
     for x, exp_val in zip(sample_inputs, expected):
         silu_hw, lut_idx, lut_raw = hardware_silu(x)
@@ -129,5 +130,14 @@ if __name__ == "__main__":
 
     hw_vals = np.array(hw_vals, dtype=np.float32)
     diffs = np.abs(hw_vals - expected)
-    matches = np.all(diffs <= tol)
-    print(f"Match expected within {tol}: {'YES' if matches else 'NO'} (max diff {diffs.max():.6f})")
+    rel = diffs / np.maximum(np.abs(expected), 1e-12)
+    atol = 1e-6
+    rtol = 1e-3
+    try:
+        np.testing.assert_allclose(hw_vals, expected, atol=atol, rtol=rtol)
+        passes = True
+    except AssertionError:
+        passes = False
+    print(f"Max abs error: {diffs.max():.8f}")
+    print(f"Max rel error: {rel.max():.8f}")
+    print(f"All within atol={atol} rtol={rtol}: {'YES' if passes else 'NO'}")

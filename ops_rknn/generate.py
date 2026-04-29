@@ -17,6 +17,8 @@ from rknn.api import RKNN
 
 ACTIVATION_FNS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
   "tanh": torch.tanh,
+  "exp": torch.exp,
+  "exp2": lambda x: torch.exp(x * 0.6931471805599453),
 }
 
 
@@ -119,6 +121,31 @@ def _make_add_int8_onnx(size: int) -> tuple[onnx.ModelProto, list[list[int]]]:
   model = helper.make_model(graph, opset_imports=[helper.make_operatorsetid("", 17)])
   return model, [shape, shape]
 
+def _make_shift_onnx(op: str, size: int) -> tuple[onnx.ModelProto, list[list[int]]]:
+  if op not in {"lshift", "rshift"}:
+    raise ValueError(f"unsupported shift op: {op}")
+  shape = [1, 1, size, size]
+  input_x = helper.make_tensor_value_info("input_x", TensorProto.INT32, shape)
+  input_y = helper.make_tensor_value_info("input_y", TensorProto.INT32, shape)
+  output = helper.make_tensor_value_info("output", TensorProto.INT32, shape)
+  direction = "LEFT" if op == "lshift" else "RIGHT"
+  nodes = [
+    helper.make_node("Cast", ["input_x"], ["x_f32"], to=TensorProto.FLOAT),
+    helper.make_node("Cast", ["input_y"], ["y_f32"], to=TensorProto.FLOAT),
+    helper.make_node(
+      "Constant",
+      [],
+      ["two_f32"],
+      value=helper.make_tensor(name="two_f32", data_type=TensorProto.FLOAT, dims=[], vals=[2.0]),
+    ),
+    helper.make_node("Pow", ["two_f32", "y_f32"], ["pow_f32"]),
+    helper.make_node("Mul" if direction == "LEFT" else "Div", ["x_f32", "pow_f32"], ["shift_f32"]),
+    helper.make_node("Cast", ["shift_f32"], ["output"], to=TensorProto.INT32),
+  ]
+  graph = helper.make_graph(nodes, f"{op}_int32_1x{size}", [input_x, input_y], [output])
+  model = helper.make_model(graph, opset_imports=[helper.make_operatorsetid("", 17)])
+  return model, [shape, shape]
+
 
 def _make_torch_onnx(op: str, size: int, dtype: torch.dtype) -> tuple[Path, list[list[int]]]:
   shape = (1, 1, size, size)
@@ -184,26 +211,26 @@ def _make_torch_onnx(op: str, size: int, dtype: torch.dtype) -> tuple[Path, list
       def forward(self, x):
         return -torch.floor(-x)
 
-  elif op == "cmplt":
+  elif op in {"cmplt", "cmple", "cmpgt", "cmpge", "cmpeq", "cmpne"}:
     class Model(torch.nn.Module):
       def forward(self, x, y):
-        return (x < y).to(torch.float16)
+        if op == "cmplt":
+          out = x < y
+        elif op == "cmple":
+          out = x <= y
+        elif op == "cmpgt":
+          out = x > y
+        elif op == "cmpge":
+          out = x >= y
+        elif op == "cmpeq":
+          out = x == y
+        else:
+          out = x != y
+        return out.to(torch.float16)
 
     x = torch.linspace(-2, 2, size * size, dtype=dtype).reshape(shape)
     y = torch.linspace(2, -2, size * size, dtype=dtype).reshape(shape)
-    m = Model()
-    torch.onnx.export(m, (x, y), str(onnx_path), input_names=["input_x", "input_y"], output_names=["output"], opset_version=17)
-    input_shapes = [list(shape), list(shape)]
-    return onnx_path, input_shapes
-
-  elif op == "cmpne":
-    class Model(torch.nn.Module):
-      def forward(self, x, y):
-        return (x != y).to(torch.float16)
-
-    x = torch.linspace(-2, 2, size * size, dtype=dtype).reshape(shape)
-    y = torch.linspace(2, -2, size * size, dtype=dtype).reshape(shape)
-    if size * size > 0:
+    if op in {"cmpeq", "cmpne"} and size * size > 0:
       y = y.clone()
       y.view(-1)[0] = x.view(-1)[0]
     m = Model()
@@ -736,6 +763,10 @@ def main() -> int:
       "max",
       "min",
       "cmplt",
+      "cmple",
+      "cmpgt",
+      "cmpge",
+      "cmpeq",
       "cmpne",
       "neg_bool",
       "relu",
@@ -750,6 +781,8 @@ def main() -> int:
       "missing_conv2d",
       "idiv",
       "add_int",
+      "lshift",
+      "rshift",
       *ACTIVATION_FNS,
     ],
   )
@@ -801,6 +834,21 @@ def main() -> int:
     if not args.onnx_only:
       if args.int8_input:
         raise SystemExit("add_int --int8-input: RKNNToolkit2 2.3.2 crashes exporting INT8-input graphs; use --onnx-only or omit --int8-input")
+      _export_rknn(onnx_path, input_shapes, args.target)
+      print(f"wrote: {onnx_path.with_suffix('.rknn')}")
+    return 0
+
+  if args.op in {"lshift", "rshift"}:
+    onnx_path = models_dir / f"{args.op}_int32_1x{args.size}.onnx"
+    if onnx_path.exists() and not args.force:
+      print(f"skip: {onnx_path} exists")
+      shape = [1, 1, args.size, args.size]
+      input_shapes = [shape, shape]
+    else:
+      model, input_shapes = _make_shift_onnx(args.op, args.size)
+      _write_onnx(model, onnx_path)
+      print(f"wrote: {onnx_path}")
+    if not args.onnx_only:
       _export_rknn(onnx_path, input_shapes, args.target)
       print(f"wrote: {onnx_path.with_suffix('.rknn')}")
     return 0
@@ -958,7 +1006,7 @@ def main() -> int:
   if onnx_path.exists() and not args.force:
     print(f"skip: {onnx_path} exists")
     input_shapes = [[1, 1, args.size, args.size]]
-    if args.op in {"recip", "div", "add", "minus", "max", "min", "cmplt", "cmpne"}:
+    if args.op in {"recip", "div", "add", "minus", "max", "min", "cmplt", "cmple", "cmpgt", "cmpge", "cmpeq", "cmpne"}:
       input_shapes = [input_shapes[0], input_shapes[0]]
   else:
     onnx_path, input_shapes = _make_torch_onnx(args.op, args.size, torch.float16)

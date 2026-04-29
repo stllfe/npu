@@ -4,20 +4,20 @@ set breakpoint pending on
 break submitTask
 commands
 #   shell python dump.py 1
-  shell python dump.py 2 | grep EMIT | grep -v "0x00000000" 
   shell python dump.py 2 | grep EMIT | grep -v "0x00000000" | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' | sed 's/^.*EMIT(/EMIT(/' > /tmp/ops_reg_emit
 
   printf "\n[gem2 (matmul weight)]\n"
+  shell python dump.py 2 
   shell python dump.py 2 | grep -E "\[00.*]" | tee /tmp/ops_reg_weight
 
 #   printf "\n[gem2 (matmul EMIT)]\n"
 #   shell python dump.py 2  --size 4096 | grep EMIT | grep -v "0x00000000" | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' | sed 's/^.*EMIT(/EMIT(/' | tee /tmp/ops_reg_emit
 
-  #  printf "\n[gem3 (matmul input)]\n"
-  #  shell python dump.py 3 | grep -E "\[00.*]" | tee /tmp/ops_reg_input
+  printf "\n[gem3 (matmul input)]\n"
+  shell python dump.py 3 | grep -E "\[00.*]" | tee /tmp/ops_reg_input
 
-#   printf "\n[gem4 (output before submit)]\n"
-#   shell python dump.py 4 | grep -E "\[00.*]" | tee /tmp/ops_reg_output
+   printf "\n[gem4 (output before submit)]\n"
+   shell python dump.py 4 | grep -E "\[00.*]" | tee /tmp/ops_reg_output
   
 #   printf "\n[gem6 (cmplt op2)]\n"
 #   shell python dump.py 6 | tee /tmp/ops_reg_weight2

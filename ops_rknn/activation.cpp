@@ -145,6 +145,12 @@ static const std::vector<ActivationDescriptor> ACTIVATIONS = {
   {"softplus", [](const std::vector<float> &in, std::vector<float> &out, int) {
      compute_elementwise(in, out, [](float x) { return std::log1p(std::exp(x)); });
   }},
+  {"exp", [](const std::vector<float> &in, std::vector<float> &out, int) {
+     compute_elementwise(in, out, [](float x) { return std::exp(x); });
+  }},
+  {"exp2", [](const std::vector<float> &in, std::vector<float> &out, int) {
+     compute_elementwise(in, out, [](float x) { return std::exp2(x); });
+  }},
   {"gelu", [](const std::vector<float> &in, std::vector<float> &out, int) {
      compute_elementwise(in, out, [](float x) {
        constexpr float k = 0.707106781186547524f;
