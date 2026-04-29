@@ -4734,10 +4734,17 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     config->in_height == 5 && config->in_width == 7 &&
     config->out_channels == 6 && config->weight_in_channels == 1 &&
     config->kernel_h == 3 && config->kernel_w == 3 && config->groups == 1);
+  bool is_11555_35333_g5 = (config->batch == 1 && config->in_channels == 15 &&
+    config->in_height == 5 && config->in_width == 5 &&
+    config->out_channels == 35 && config->weight_in_channels == 3 &&
+    config->kernel_h == 3 && config->kernel_w == 3 && groups == 5);
   if (is_161818_161633) {
     align_c = 16;
     width_stride = config->in_width;
     out_width_stride = 256;
+  }
+  if (is_11555_35333_g5) {
+    width_stride = config->in_width;
   }
   if (config->kernel_h == 1 && config->kernel_w == 1) {
     int atoms = out_width * out_height;
@@ -4880,6 +4887,56 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
         memcpy(npu_kernel + dst_base, kernel + src_base, (size_t)config->kernel_h * config->kernel_w * sizeof(__fp16));
       }
     }
+  }
+  if (is_11555_35333_g5) {
+    // RKNN stores blocks in oc16 tiles with kh/kw major ordering; reorder to match.
+    const size_t kernel_hw = (size_t)config->kernel_h * config->kernel_w;
+    const size_t block_count = (size_t)config->out_channels * kernel_hw;
+    const size_t block_size = 16;
+    const size_t full_blocks = (size_t)config->out_channels / block_size;
+    const size_t rem_blocks = (size_t)config->out_channels % block_size;
+    const size_t full_span = kernel_hw * block_size;
+    __fp16 *reordered = (__fp16*)malloc(expanded_weight_elems * sizeof(__fp16));
+    if (!reordered) {
+      printf("failed to allocate conv2d reorder buffer for %s\n", config->name);
+      free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected);
+      return -1;
+    }
+    memset(reordered, 0, expanded_weight_elems * sizeof(__fp16));
+    for (size_t p = 0; p < block_count; p++) {
+      int dst_oc = (int)(p / kernel_hw);
+      size_t rem_p = p % kernel_hw;
+      int dst_kh = (int)(rem_p / (size_t)config->kernel_w);
+      int dst_kw = (int)(rem_p % (size_t)config->kernel_w);
+      size_t src_oc = 0;
+      int src_kh = 0;
+      int src_kw = 0;
+      if (p < full_blocks * full_span) {
+        size_t oc_block = p / full_span;
+        size_t block_off = p % full_span;
+        size_t khkw = block_off / block_size;
+        size_t oc_in_block = block_off % block_size;
+        src_oc = oc_block * block_size + oc_in_block;
+        src_kh = (int)(khkw / (size_t)config->kernel_w);
+        src_kw = (int)(khkw % (size_t)config->kernel_w);
+      } else if (rem_blocks > 0) {
+        size_t rem_off = p - full_blocks * full_span;
+        size_t khkw = rem_off / rem_blocks;
+        size_t oc_in_block = rem_off % rem_blocks;
+        src_oc = full_blocks * block_size + oc_in_block;
+        src_kh = (int)(khkw / (size_t)config->kernel_w);
+        src_kw = (int)(khkw % (size_t)config->kernel_w);
+      }
+      for (int ic = 0; ic < config->in_channels; ic++) {
+        size_t src_idx = (((size_t)src_oc * config->in_channels + ic) * config->kernel_h + src_kh)
+            * config->kernel_w + src_kw;
+        size_t dst_idx = (((size_t)dst_oc * config->in_channels + ic) * config->kernel_h + dst_kh)
+            * config->kernel_w + dst_kw;
+        reordered[dst_idx] = npu_kernel[src_idx];
+      }
+    }
+    memcpy(npu_kernel, reordered, expanded_weight_elems * sizeof(__fp16));
+    free(reordered);
   }
 
   float *output_nchw = (float*)malloc((size_t)config->out_channels * out_height * out_width * sizeof(float));
@@ -5070,7 +5127,7 @@ int test_conv2d(int argc, char **argv) {
     // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
     // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
     // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
-    {1, 32, 32, 32, 32, 1, 1, 1, 32, "conv2d"},
+    {1, 15, 5, 5, 35, 3, 3, 3, 5, "conv2d"},
   };
 
   int status = 0;
