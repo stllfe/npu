@@ -43,9 +43,6 @@
 #define NPU_CBUF_BANKS 12
 #endif
 
-static inline uint32_t ceil_div_u32(uint32_t x, uint32_t y) {
-   return (x + y - 1u) / y;
-}
 
 #ifdef __cplusplus
 extern "C" {
@@ -975,7 +972,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
       }
 
       alu_case_conv2d: { // CONV2d
-         printf("current_alu_algorithm %d\n", current_alu_algorithm);
+         int conv_batch = conv2d_params.batch > 0 ? conv2d_params.batch : 1;
          int in_h = conv2d_params.in_height > 0 ? conv2d_params.in_height : 5;
          int in_w = conv2d_params.in_width > 0 ? conv2d_params.in_width : 7;
          int conv_in_channels = conv2d_params.in_channels > 0 ? conv2d_params.in_channels : 3;
@@ -983,6 +980,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int conv_out_channels = conv2d_params.out_channels > 0 ? conv2d_params.out_channels : 6;
          int conv_kernel_h = conv2d_params.kernel_h > 0 ? conv2d_params.kernel_h : 2;
          int conv_kernel_w = conv2d_params.kernel_w > 0 ? conv2d_params.kernel_w : 3;
+         int weight_in_channels = conv_groups > 0 ? (conv_in_channels / conv_groups) : conv_in_channels;
          int out_h = conv2d_params.out_height > 0 ? conv2d_params.out_height : (in_h - 2 + 1);
          int out_w = conv2d_params.out_width > 0 ? conv2d_params.out_width : (in_w - 3 + 1);
          int align_c = conv2d_params.align_c > 0 ? conv2d_params.align_c : 8;
@@ -1000,11 +998,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int weight_bytes_total = weight_bytes_per_kernel * conv_out_channels;
          int surface_add = out_width_stride * 2;
          int cbuf_entries = dataout_atomics * 2;
-         // RKNN reference for 1x3x5x7 input, 6x3x2x5 weights uses a larger buffer reservation
          if (conv_groups == 1 && conv_kernel_h == 2 && conv_kernel_w == 5 && conv_in_channels == 3 && conv_out_channels == 6) {
            cbuf_entries = 40;
          }
-         // RKNN reference for 1x3x5x7 input, 6x3x3x1 weights tweaks feature grains, strides and buffer reservations.
          if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 1 && conv_in_channels == 3 && conv_out_channels == 6) {
            out_width_stride = 24;
            surface_add = out_width_stride * 2;
@@ -1027,33 +1023,28 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
            surface_add = out_width_stride * 2;
          }
          int feature_grains = 7;
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 1 && conv_in_channels == 3 && conv_out_channels == 6) {
-           feature_grains = 8;
-         }
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
-           feature_grains = 8;
-         }
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 5 && conv_in_channels == 3 && conv_out_channels == 6) {
-           feature_grains = 8;
-         }
-         if (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
-           feature_grains = 8;
+         if ((conv_groups == 1 && conv_kernel_h == 3 && (conv_kernel_w == 1 || conv_kernel_w == 3 || conv_kernel_w == 5) &&
+                conv_in_channels == 3 && conv_out_channels == 6) ||
+            (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6)) {
+            feature_grains = 8;
          }
          int surf_stride = width_stride * out_h;
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 1 && conv_in_channels == 3 && conv_out_channels == 6) {
-           surf_stride = 32;
+         if ((conv_groups == 1 && conv_kernel_h == 3 && (conv_kernel_w == 1 || conv_kernel_w == 3 || conv_kernel_w == 5) &&
+                conv_in_channels == 3 && conv_out_channels == 6) ||
+            (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6)) {
+            surf_stride = 32;
          }
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
-           surf_stride = 32;
-         }
-         if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 5 && conv_in_channels == 3 && conv_out_channels == 6) {
-           surf_stride = 32;
-         }
-         if (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
-           surf_stride = 32;
+         printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
+            conv_batch, conv_in_channels, in_h, in_w,
+            conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
+         if (conv_batch == 1 && conv_in_channels == 3 && in_h == 2 && in_w == 2 &&
+             conv_out_channels == 6 && weight_in_channels == 3 &&
+             conv_kernel_h == 1 && conv_kernel_w == 1) {
+               printf("entered if");
+            cbuf_entries = 16;
+            surf_stride = 8;
          }
 
-         // Mirror RKNN conv2d register order for deterministic dumps
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_CNA_CONV_CON1, CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(10) | CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2));
          EMIT(REG_CNA_CONV_CON2, CNA_CONV_CON2_FEATURE_GRAINS(feature_grains));

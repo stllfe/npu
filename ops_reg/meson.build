@@ -68,38 +68,37 @@ endforeach
 
 ##################
 
-# conv2d_cases = [
-#   ['1', '3', '5', '7', '6', '3', '2', '1', '1', 'conv2d_i1357_w6321'],
-#   ['1', '3', '5', '7', '6', '3', '2', '3', '1', 'conv2d_i1357_w6323'],
-#   ['1', '3', '5', '7', '6', '3', '2', '5', '1', 'conv2d_i1357_w6325'],
-#   ['1', '3', '5', '7', '6', '3', '3', '1', '1', 'conv2d_i1357_w6331'],
-#   ['1', '3', '5', '7', '6', '3', '3', '3', '1', 'conv2d_i1357_w6333'],
-#   ['1', '3', '5', '7', '6', '1', '3', '3', '3', 'conv2d_i1357_w6133_g3'],
-#   ['1', '3', '5', '7', '6', '3', '3', '5', '1', 'conv2d_i1357_w6335'],
-# ]
+conv2d_cases = [
+  ['1', '3', '5', '7', '6', '3', '2', '1', '1', 'conv2d_i1357_w6321'],
+  ['1', '3', '5', '7', '6', '3', '2', '3', '1', 'conv2d_i1357_w6323'],
+  ['1', '3', '5', '7', '6', '3', '2', '5', '1', 'conv2d_i1357_w6325'],
+  ['1', '3', '5', '7', '6', '3', '3', '1', '1', 'conv2d_i1357_w6331'],
+  ['1', '3', '5', '7', '6', '3', '3', '3', '1', 'conv2d_i1357_w6333'],
+  ['1', '3', '5', '7', '6', '1', '3', '3', '3', 'conv2d_i1357_w6133_g3'],
+  ['1', '3', '5', '7', '6', '3', '3', '5', '1', 'conv2d_i1357_w6335'],
+]
 
-# foreach dims : conv2d_cases
-#   test(dims[9],
-#     ops_reg_exe,
-#     is_parallel: false,
-#     suite: 'conv2d',
-#     args: ['conv2d', dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], dims[8]])
-# endforeach
+foreach dims : conv2d_cases
+  test(dims[9],
+    ops_reg_exe,
+    is_parallel: false,
+    suite: 'conv2d',
+    args: ['conv2d', dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], dims[8]])
+endforeach
 
-# foreach n : range(1, 513)
-#   test('conv2d_1x3_@0@x@0@_k1'.format(n),
-#     ops_reg_exe,
-#     is_parallel: false,
-#     suite: 'conv2d',
-#     args: ['conv2d', '1', '3', n.to_string(), n.to_string(), '6', '3', '1', '1', '1'])
-# endforeach
+foreach n : range(1, 513)
+  test('conv2d_1x3_@0@x@0@_k1'.format(n),
+    ops_reg_exe,
+    is_parallel: false,
+    suite: 'conv2d',
+    args: ['conv2d', '1', '3', n.to_string(), n.to_string(), '6', '3', '1', '1', '1'])
+endforeach
 
 #################
-# Run with: ninja -C build test_failfast
-run_target('test_matmul',
-  command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'matmul'],
-)
-
-# run_target('test_conv2d',
-#   command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'conv2d'],
+# run_target('test_matmul',
+#   command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'matmul'],
 # )
+
+run_target('test_conv2d',
+  command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'conv2d'],
+)

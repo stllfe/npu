@@ -3739,7 +3739,7 @@ typedef struct {
 } MatmulTestConfig;
 
 static int should_print_matmul(const MatmulTestConfig *config) {
-  return 1;
+  return 0;
 }
 
 static void pack_input_8x8_stride32(__fp16 *dst, const __fp16 *src, int align_in) {
@@ -4402,7 +4402,7 @@ int test_matmul(int argc, char **argv) {
   }
 
   static const MatmulTestConfig configs[] = {
-    {"matmul", 1, 8192, 8193}, 
+    {"matmul", 65, 1, 33}, 
   };
 
   int status = 0;
@@ -4944,7 +4944,8 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
       }
     }
   }
-  printf("%s: matches CPU -> %s\n", config->name, mismatches ? "NO" : "YES");
+  printf("%s: matches CPU -> %s (mismatches=%d)\n",
+      config->name, mismatches ? "NO" : "YES", mismatches);
 
   free(input);
   free(kernel);
@@ -4978,13 +4979,14 @@ int test_conv2d(int argc, char **argv) {
     return run_conv2d_case(&cli_config);
   }
   static const Conv2dTestConfig configs[] = {
-    {1, 3, 5, 7, 6, 3, 2, 1, 1, "conv2d_i1357_w6321"},
-    {1, 3, 5, 7, 6, 3, 2, 3, 1, "conv2d_i1357_w6323"},
-    {1, 3, 5, 7, 6, 3, 2, 5, 1, "conv2d_i1357_w6325"},
-    {1, 3, 5, 7, 6, 3, 3, 1, 1, "conv2d_i1357_w6331"},
-    {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
-    {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
-    {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
+    // {1, 3, 5, 7, 6, 3, 2, 1, 1, "conv2d_i1357_w6321"},
+    // {1, 3, 5, 7, 6, 3, 2, 3, 1, "conv2d_i1357_w6323"},
+    // {1, 3, 5, 7, 6, 3, 2, 5, 1, "conv2d_i1357_w6325"},
+    // {1, 3, 5, 7, 6, 3, 3, 1, 1, "conv2d_i1357_w6331"},
+    // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
+    // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
+    // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
+    {1, 3, 2, 2, 6, 3, 1, 1, 1, "conv2d"},
   };
 
   int status = 0;
@@ -5148,8 +5150,8 @@ int main(int argc, char **argv) {
   // test_silu(argc, argv);
   // test_relu(argc, argv);
   // test_conv1d(argc, argv);
-  // test_conv2d(argc, argv);
-  test_matmul(argc, argv);
+  test_conv2d(argc, argv);
+  // test_matmul(argc, argv);
   // test_maxpool(argc, argv);
   // test_minpool(argc, argv);
   // test_avgpool(argc, argv);
