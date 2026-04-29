@@ -1262,19 +1262,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_DATA_CUBE_HEIGHT, DPU_DATA_CUBE_HEIGHT_HEIGHT(out_h - 1));
          EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(orig_channel) | DPU_DATA_CUBE_CHANNEL_CHANNEL(out_channel_field));
          EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
-         int ow_cfg_size_e_0 = 1;
-         int ow_cfg_size_e_1 = 1;
-         int ow_cfg_size_e_2 = 1;
-         if (  
-         (conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
-            conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) 
-            ||
-         ( conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
-            conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3)
-         ) {
-            ow_cfg_size_e_0 = 3; ow_cfg_size_e_1 = 3; ow_cfg_size_e_2 = 3;       
-         }
-         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(ow_cfg_size_e_2) | DPU_BS_OW_CFG_SIZE_E_1(ow_cfg_size_e_1) | DPU_BS_OW_CFG_SIZE_E_0(ow_cfg_size_e_0) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         int ow_cfg_size_e_012 = 1;
+         if (is_depthwise) ow_cfg_size_e_012 = 3;
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(ow_cfg_size_e_012) | DPU_BS_OW_CFG_SIZE_E_1(ow_cfg_size_e_012) | DPU_BS_OW_CFG_SIZE_E_0(ow_cfg_size_e_012) | DPU_BS_OW_CFG_OD_BYPASS(1));
          EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(out_channel_field));
          EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_HEIGHT_WDMA(out_h - 1) | DPU_WDMA_SIZE_1_WIDTH_WDMA(out_w - 1));
          EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_RELU_BYPASS(1) | DPU_BN_CFG_BN_MUL_BYPASS(1) | DPU_BN_CFG_BN_ALU_BYPASS(1) | DPU_BN_CFG_BN_BYPASS(1));
