@@ -1090,7 +1090,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
                   argb_in = 11;
                }
             else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
-            conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) argb_in = 8;
+               conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) argb_in = 8;
+            else if ( conv_batch==1 && conv_in_channels==4 && in_h==1 && in_w==1 &&
+               conv_out_channels==2 && weight_in_channels==2 && conv_kernel_h==1 && conv_kernel_w==1) argb_in = 11;
+
 
             conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(argb_in) ;
          }
@@ -1133,10 +1136,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             data_in_channel_aligned = 8;
             weight_bytes_per_kernel = 144; 
             cbuf_entries = 144;
-            // cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             line_stride = 16;
             surf_stride = 128;
-            // align_c = 16;
             cv5_con5 = 0x0000ffff;
             weight_bytes_total = 0x240;
             out_width_stride = 52;
@@ -1145,19 +1146,23 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
             conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
             feature_grains = 8;
-            // data_in_channel_aligned = 8;
-            // weight_bytes_per_kernel = 144; 
             cbuf_entries = 40;
-            // cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             line_stride = 8;
             surf_stride = 32;
-            // align_c = 16;
             cv5_con5 = 0x0000ffff;
-            // weight_bytes_total = 0x240;
             out_width_stride = 16;
             surface_add = 32;
          }
-
+         else if ( conv_batch==1 && conv_in_channels==4 && in_h==1 && in_w==1 &&
+            conv_out_channels==2 && weight_in_channels==2 && conv_kernel_h==1 && conv_kernel_w==1) {
+            feature_grains = 2;
+            cbuf_entries = 8;
+            line_stride = 8;
+            surf_stride = 0;
+            cv5_con5 = 0x0000ffff;
+            // out_width_stride = 16;
+            // surface_add = 32;
+         }
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_CNA_CONV_CON1, conv_con1);
          EMIT(REG_CNA_CONV_CON2, CNA_CONV_CON2_FEATURE_GRAINS(feature_grains));
