@@ -6125,6 +6125,26 @@ static int run_conv1d_case(const Conv1dTestConfig *config) {
   return matches ? 0 : -1;
 }
 
+static int parse_conv1d_index(const char *selector, long *out_index) {
+  if (!selector || !out_index) return 0;
+  const char *p = selector;
+  if (p[0] == '#') {
+    p++;
+  } else if (strncmp(p, "idx:", 4) == 0) {
+    p += 4;
+  } else {
+    for (const char *s = p; *s; s++) {
+      if (*s < '0' || *s > '9') return 0;
+    }
+  }
+  if (*p == '\0') return 0;
+  char *end = NULL;
+  long idx = strtol(p, &end, 10);
+  if (!end || *end != '\0') return 0;
+  *out_index = idx;
+  return 1;
+}
+
 int test_conv1d(int argc, char **argv) {
   static const Conv1dTestConfig configs[] = {
       {"conv1d_bs1", 1, 1, 11, 6, 1, 1, 0, "conv1d_simple_bs1"},
@@ -6144,8 +6164,39 @@ int test_conv1d(int argc, char **argv) {
       {"conv1d_bs8_8311_635", 8, 3, 11, 6, 3, 5, 0, "conv1d_simple_bs8_c3_k2"},
       {"conv1d_bs8_8311_635", 8, 3, 11, 6, 1, 5, 0, "conv1d_simple_bs8_c3_g1_k5"},
   };
+  const size_t config_count = sizeof(configs) / sizeof(configs[0]);
+  if (argc > 1) {
+    int status = 0;
+    for (int argi = 1; argi < argc; argi++) {
+      const char *selector = argv[argi];
+      if (!selector) continue;
+      long idx = -1;
+      if (parse_conv1d_index(selector, &idx)) {
+        if (idx < 0 || idx >= (long)config_count) {
+          printf("conv1d: invalid index %ld\n", idx);
+          status = -1;
+          continue;
+        }
+        if (run_conv1d_case(&configs[idx]) != 0) status = -1;
+        continue;
+      }
+      int matched = 0;
+      for (size_t i = 0; i < config_count; i++) {
+        if ((configs[i].name && strcmp(configs[i].name, selector) == 0) ||
+            (configs[i].fixture_dir && strcmp(configs[i].fixture_dir, selector) == 0)) {
+          matched = 1;
+          if (run_conv1d_case(&configs[i]) != 0) status = -1;
+        }
+      }
+      if (!matched) {
+        printf("conv1d: unknown case '%s'\n", selector);
+        status = -1;
+      }
+    }
+    return status;
+  }
   int status = 0;
-  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+  for (size_t i = 0; i < config_count; i++) {
     if (run_conv1d_case(&configs[i]) != 0) {
       status = -1;
     }

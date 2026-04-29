@@ -68,6 +68,35 @@ endforeach
 
 ##################
 
+conv1d_cases = [
+  ['0', 'conv1d_bs1'],
+  ['1', 'conv1d_bs8'],
+  ['2', 'conv1d_bs1_612'],
+  ['3', 'conv1d_bs1_615'],
+  ['4', 'conv1d_bs1_1311_631'],
+  ['5', 'conv1d_bs1_1311_632'],
+  ['6', 'conv1d_bs1_1311_635'],
+  ['7', 'conv1d_bs1_1311_615'],
+  ['8', 'conv1d_bs8_8111_611'],
+  ['9', 'conv1d_bs8_8111_612'],
+  ['10', 'conv1d_bs8_8111_612'],
+  ['11', 'conv1d_bs8_8111_615'],
+  ['12', 'conv1d_bs8_8311_631'],
+  ['13', 'conv1d_bs8_8311_632'],
+  ['14', 'conv1d_bs8_8311_635'],
+  ['15', 'conv1d_bs8_8311_635'],
+]
+
+foreach dims : conv1d_cases
+  test('conv1d_@0@_@1@'.format(dims[0], dims[1]),
+    ops_reg_exe,
+    is_parallel: false,
+    suite: 'conv1d',
+    args: ['conv1d', dims[0]])
+endforeach
+
+##################
+
 conv2d_cases = [
   ['1', '16', '18', '18', '16', '16', '3', '3', '1', 'conv2d_i1161818_w161633'], 
   ['1', '4', '9', '9', '4', '4', '1', '1', '1', 'conv2d_i1499_w4411'], 
@@ -152,6 +181,10 @@ endforeach
 
 run_target('test_matmul',
   command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'matmul'],
+)
+
+run_target('test_conv1d',
+  command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'conv1d'],
 )
 
 run_target('test_conv2d',
