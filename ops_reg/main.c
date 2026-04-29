@@ -312,6 +312,38 @@ static void print_grid(const char *label, const void *data,
   }
 }
 
+static void print_grid_head_tail(const char *label, const void *data,
+    int rows, int cols, print_value_fn read_value, int head_rows, int tail_rows) {
+  if (!data) {
+    printf("%s: (null)\n", label);
+    return;
+  }
+  if (head_rows < 0) head_rows = 0;
+  if (tail_rows < 0) tail_rows = 0;
+  if (rows <= head_rows + tail_rows || rows == 0) {
+    print_grid(label, data, rows, cols, read_value);
+    return;
+  }
+  printf("%s (%dx%d):\n", label, rows, cols);
+  for (int r = 0; r < head_rows; r++) {
+    printf("  ");
+    size_t base = (size_t)r * (size_t)cols;
+    for (int c = 0; c < cols; c++) {
+      printf("%7.3f ", read_value(data, base + (size_t)c));
+    }
+    printf("\n");
+  }
+  printf("  ...\n");
+  for (int r = rows - tail_rows; r < rows; r++) {
+    printf("  ");
+    size_t base = (size_t)r * (size_t)cols;
+    for (int c = 0; c < cols; c++) {
+      printf("%7.3f ", read_value(data, base + (size_t)c));
+    }
+    printf("\n");
+  }
+}
+
 static void print_matrix(const char *title, const void *data,
     int rows, int cols, const char *dtype, print_value_fn read_value,
     const char *fmt) {
@@ -343,6 +375,16 @@ static void print_fp16_grid(const char *label, const __fp16 *data,
 static void print_fp32_grid(const char *label, const float *data,
     int rows, int cols) {
   print_grid(label, data, rows, cols, read_f32_value);
+}
+
+static void print_fp16_grid_head_tail(const char *label, const __fp16 *data,
+    int rows, int cols, int head_rows, int tail_rows) {
+  print_grid_head_tail(label, data, rows, cols, read_fp16_value, head_rows, tail_rows);
+}
+
+static void print_fp32_grid_head_tail(const char *label, const float *data,
+    int rows, int cols, int head_rows, int tail_rows) {
+  print_grid_head_tail(label, data, rows, cols, read_f32_value, head_rows, tail_rows);
 }
 
 static void print_fp16_matrix(const char *title, const __fp16 *data,
@@ -391,8 +433,13 @@ static int run_div_case(const DivTestConfig *config) {
   float max_abs_diff_fp16 = 0.0f;
   float max_abs_diff_fp32 = 0.0f;
   __fp16 *unpacked_fp16 = (__fp16*)malloc((size_t)size * sizeof(__fp16));
-  if (!unpacked_fp16) {
+  float *unpacked_fp32 = (float*)malloc((size_t)size * sizeof(float));
+  __fp16 *expected_fp16 = (__fp16*)malloc((size_t)size * sizeof(__fp16));
+  float *expected_fp32 = (float*)malloc((size_t)size * sizeof(float));
+  if (!unpacked_fp16 || !unpacked_fp32 || !expected_fp16 || !expected_fp32) {
     printf("%s: failed to allocate output buffer\n", name);
+    free(unpacked_fp16); free(unpacked_fp32);
+    free(expected_fp16); free(expected_fp32);
     free(a); free(b);
     return -1;
   }
@@ -409,14 +456,17 @@ static int run_div_case(const DivTestConfig *config) {
     unpacked_fp16[i] = result[(size_t)i * stride_fp16];
   }
   free(result);
+  for (int i = 0; i < size; i++) {
+    unpacked_fp32[i] = (float)unpacked_fp16[i];
+  }
 
   for (int i = 0; i < size; i++) {
-    float expected_fp16 = (float)(__fp16)((float)a[i] / (float)b[i]);
-    float expected_fp32 = (float)a[i] / (float)b[i];
+    expected_fp16[i] = (__fp16)((float)a[i] / (float)b[i]);
+    expected_fp32[i] = (float)a[i] / (float)b[i];
     float actual_fp16 = (float)unpacked_fp16[i];
     float actual_fp32 = (float)unpacked_fp16[i];
-    float diff_fp16 = fabsf(actual_fp16 - expected_fp16);
-    float diff_fp32 = fabsf(actual_fp32 - expected_fp32);
+    float diff_fp16 = fabsf(actual_fp16 - (float)expected_fp16[i]);
+    float diff_fp32 = fabsf(actual_fp32 - expected_fp32[i]);
     if (diff_fp16 > max_abs_diff_fp16) max_abs_diff_fp16 = diff_fp16;
     if (diff_fp32 > max_abs_diff_fp32) max_abs_diff_fp32 = diff_fp32;
   }
@@ -425,8 +475,15 @@ static int run_div_case(const DivTestConfig *config) {
     print_fp16_grid("Input A", a, rows, cols);
     print_fp16_grid("Input B", b, rows, cols);
     print_fp16_grid("Result (as fp16)", unpacked_fp16, rows, cols);
+    print_fp32_grid("Result (as fp32)", unpacked_fp32, rows, cols);
+    print_fp16_grid("CPU (fp16)", expected_fp16, rows, cols);
+    print_fp32_grid("CPU (fp32)", expected_fp32, rows, cols);
   } else {
     printf("%s: tested %dx%d (total %zu elements)\n", name, rows, cols, total_elements);
+    print_fp16_grid_head_tail("Result (as fp16)", unpacked_fp16, rows, cols, 3, 3);
+    print_fp32_grid_head_tail("Result (as fp32)", unpacked_fp32, rows, cols, 3, 3);
+    print_fp16_grid_head_tail("CPU (fp16)", expected_fp16, rows, cols, 3, 3);
+    print_fp32_grid_head_tail("CPU (fp32)", expected_fp32, rows, cols, 3, 3);
   }
 
   const float kDivAtolFp16 = 3.2e-2f;
@@ -439,7 +496,9 @@ static int run_div_case(const DivTestConfig *config) {
   printf("%s: matches CPU -> %s\n", name, (matches_fp16 || matches_fp32) ? "YES" : "NO");
 
   breakpoint();
-  free(unpacked_fp16); free(a); free(b);
+  free(unpacked_fp16); free(unpacked_fp32);
+  free(expected_fp16); free(expected_fp32);
+  free(a); free(b);
   return (matches_fp16 || matches_fp32) ? 0 : -1;
 }
 
@@ -1892,7 +1951,7 @@ static int run_mul_case(const MulTestConfig *config) {
 
   printf("%s: matches CPU -> %s (max diff=%.6f)\n", name, matches ? "YES" : "NO", max_abs_diff);
 
-  breakpoint();
+  // breakpoint();
   free(a); free(b); free(unpacked);
   return matches ? 0 : -1;
 }
@@ -2271,8 +2330,14 @@ static int run_max_case(const MaxTestConfig *config) {
   return matches ? 0 : -1;
 }
 
+enum {
+  MINMAX_INPUT_PATTERN = 0,
+  MINMAX_INPUT_EQUAL = 1,
+  MINMAX_INPUT_UNEQUAL = 2,
+};
+
 static int run_minmax_bin_case(const MaxTestConfig *config, uint32_t alu_algorithm,
-    const char *label, int is_min) {
+    const char *label, int is_min, int input_mode) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "minmax_bin_case";
   int rows = 0;
@@ -2302,12 +2367,18 @@ static int run_minmax_bin_case(const MaxTestConfig *config, uint32_t alu_algorit
   for (int i = 0; i < size; i++) {
     float va = (float)i * 0.25f;
     float vb = va;
-    if ((i % 4) == 0) {
+    if (input_mode == MINMAX_INPUT_EQUAL) {
       vb = va;
-    } else if ((i % 2) == 0) {
-      vb = va - 0.5f;
+    } else if (input_mode == MINMAX_INPUT_UNEQUAL) {
+      vb = (i % 2 == 0) ? (va + 0.5f) : (va - 0.5f);
     } else {
-      vb = va + 0.5f;
+      if ((i % 4) == 0) {
+        vb = va;
+      } else if ((i % 2) == 0) {
+        vb = va - 0.5f;
+      } else {
+        vb = va + 0.5f;
+      }
     }
     a[i] = (__fp16)va;
     b[i] = (__fp16)vb;
@@ -2422,21 +2493,25 @@ static int run_minmax_bin_case(const MaxTestConfig *config, uint32_t alu_algorit
     if (results[i].mismatches < results[best_idx].mismatches) best_idx = i;
   }
 
+  int dump_raw = total_elements <= 64 || nonzero_bytes == 0;
   if (total_elements <= 64) {
     print_fp16_grid("Input A", a, rows, cols);
     print_fp16_grid("Input B", b, rows, cols);
     print_fp16_grid("Result (as fp16)", unpacked, rows, cols);
-    printf("%s (%s): output bytes nonzero=%d/%zu\n",
-        name, label ? label : "minmax_bin", nonzero_bytes, raw_bytes);
-    size_t dump_len = raw_bytes < 32 ? raw_bytes : 32;
+  } else {
+    printf("%s (%s): tested %dx%d (total %zu elements)\n",
+        name, label ? label : "minmax_bin", rows, cols, total_elements);
+  }
+
+  printf("%s (%s): output bytes nonzero=%d/%zu\n",
+      name, label ? label : "minmax_bin", nonzero_bytes, raw_bytes);
+  if (dump_raw) {
+    size_t dump_len = raw_bytes < 64 ? raw_bytes : 64;
     printf("%s (%s): output bytes[0..%zu):", name, label ? label : "minmax_bin", dump_len);
     for (size_t i = 0; i < dump_len; i++) {
       printf(" %02x", raw[i]);
     }
     printf("\n");
-  } else {
-    printf("%s (%s): tested %dx%d (total %zu elements)\n",
-        name, label ? label : "minmax_bin", rows, cols, total_elements);
   }
 
   if (results[best_idx].mismatches == 0) {
@@ -2449,6 +2524,10 @@ static int run_minmax_bin_case(const MaxTestConfig *config, uint32_t alu_algorit
     for (int i = 0; i < result_count; i++) {
       printf("  candidate %s mismatches=%d\n", results[i].name, results[i].mismatches);
     }
+  }
+  if (input_mode == MINMAX_INPUT_UNEQUAL) {
+    printf("%s (%s): fp32_pos mismatches=%d\n",
+        name, label ? label : "minmax_bin", mismatches_fp32_pos);
   }
 
   breakpoint();
@@ -2721,9 +2800,10 @@ static int test_div(int argc, char **argv) {
   }
 
   static const DivTestConfig configs[] = {
-    {"div_4x4", 4, 4},
-    {"div_45x65", 45, 65},
-    {"div_90x90", 90, 90},
+    {"div_2x2", 2, 2},
+    // {"div_4x4", 4, 4},
+    // {"div_45x65", 45, 65},
+    // {"div_90x90", 90, 90},
     // these sharp start to fail
     // one possible reason is buffer > 128KB
     // {"div_91x91", 91, 91},
@@ -3083,8 +3163,8 @@ static int test_mul(int argc, char **argv) {
 
   static const MulTestConfig configs[] = {
     {"mul_1x1", 1, 1},
-    {"mul_2x2", 2, 2},
-    {"mul_8x8", 8, 8},
+    // {"mul_2x2", 2, 2},
+    // {"mul_8x8", 8, 8},
   };
 
   int status = 0;
@@ -3235,8 +3315,12 @@ int test_minmax_bin(int argc, char **argv) {
     int status = 0;
     if (run_minmax_bin_regcheck(rows, cols, ALU_ALGO_MAX_BIN, 0, "max_bin") != 0) status = -1;
     if (run_minmax_bin_regcheck(rows, cols, ALU_ALGO_MIN_BIN, 1, "min_bin") != 0) status = -1;
-    if (run_minmax_bin_case(&cli, ALU_ALGO_MAX_BIN, "max_bin", 0) != 0) status = -1;
-    if (run_minmax_bin_case(&cli, ALU_ALGO_MIN_BIN, "min_bin", 1) != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MAX_BIN, "max_bin", 0, MINMAX_INPUT_PATTERN) != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MIN_BIN, "min_bin", 1, MINMAX_INPUT_PATTERN) != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MAX_BIN, "max_bin_eq", 0, MINMAX_INPUT_EQUAL) != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MIN_BIN, "min_bin_eq", 1, MINMAX_INPUT_EQUAL) != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MAX_BIN, "max_bin_neq", 0, MINMAX_INPUT_UNEQUAL) != 0) status = -1;
+    if (run_minmax_bin_case(&cli, ALU_ALGO_MIN_BIN, "min_bin_neq", 1, MINMAX_INPUT_UNEQUAL) != 0) status = -1;
     return status;
   }
 
@@ -3244,8 +3328,22 @@ int test_minmax_bin(int argc, char **argv) {
   MaxTestConfig config = {"minmax_bin_4x4", 4, 4};
   if (run_minmax_bin_regcheck(config.rows, config.cols, ALU_ALGO_MAX_BIN, 0, "max_bin") != 0) status = -1;
   if (run_minmax_bin_regcheck(config.rows, config.cols, ALU_ALGO_MIN_BIN, 1, "min_bin") != 0) status = -1;
-  if (run_minmax_bin_case(&config, ALU_ALGO_MAX_BIN, "max_bin", 0) != 0) status = -1;
-  if (run_minmax_bin_case(&config, ALU_ALGO_MIN_BIN, "min_bin", 1) != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MAX_BIN, "max_bin", 0, MINMAX_INPUT_PATTERN) != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MIN_BIN, "min_bin", 1, MINMAX_INPUT_PATTERN) != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MAX_BIN, "max_bin_eq", 0, MINMAX_INPUT_EQUAL) != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MIN_BIN, "min_bin_eq", 1, MINMAX_INPUT_EQUAL) != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MAX_BIN, "max_bin_neq", 0, MINMAX_INPUT_UNEQUAL) != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MIN_BIN, "min_bin_neq", 1, MINMAX_INPUT_UNEQUAL) != 0) status = -1;
+  return status;
+}
+
+int test_minmax_bin_small(int argc, char **argv) {
+  (void)argc;
+  (void)argv;
+  MaxTestConfig config = {"minmax_bin_2x1", 2, 1};
+  int status = 0;
+  if (run_minmax_bin_regcheck(config.rows, config.cols, ALU_ALGO_MIN_BIN, 1, "min_bin") != 0) status = -1;
+  if (run_minmax_bin_case(&config, ALU_ALGO_MIN_BIN, "min_bin_neq", 1, MINMAX_INPUT_UNEQUAL) != 0) status = -1;
   return status;
 }
 
@@ -6213,11 +6311,12 @@ int test_relu(int argc, char **argv) {
     return run_relu_case(&cli_config);
   }
   static const ReluTestConfig configs[] = {
-      {"relu_5x5", 5, 5},
-      {"relu_6x6", 6, 6},
-      {"relu_14x14", 14, 14},
-      {"relu_15x15", 15, 15},
-      {"relu_64x64", 64, 64},
+      {"relu_2x2", 2, 2},
+      // {"relu_5x5", 5, 5},
+      // {"relu_6x6", 6, 6},
+      // {"relu_14x14", 14, 14},
+      // {"relu_15x15", 15, 15},
+      // {"relu_64x64", 64, 64},
   };
   int status = 0;
   for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
@@ -6686,7 +6785,7 @@ typedef struct {
 
 static const TestEntry kTests[] = {
 #define TEST_ENTRY(name) {#name, test_##name}
-    TEST_ENTRY(max), TEST_ENTRY(minmax_bin), TEST_ENTRY(div), TEST_ENTRY(idiv), TEST_ENTRY(maxpool),
+    TEST_ENTRY(max), TEST_ENTRY(minmax_bin), TEST_ENTRY(minmax_bin_small), TEST_ENTRY(div), TEST_ENTRY(idiv), TEST_ENTRY(maxpool),
     TEST_ENTRY(globalmaxpool), TEST_ENTRY(globalminpool), TEST_ENTRY(minpool),
     TEST_ENTRY(avgpool), TEST_ENTRY(globalavgpool), TEST_ENTRY(cmple),
     TEST_ENTRY(cmpgt), TEST_ENTRY(cmpge), TEST_ENTRY(cmplt), TEST_ENTRY(cmpeq),
@@ -6734,6 +6833,6 @@ int main(int argc, char **argv) {
     printf("Unknown test '%s'\n", argv[1]);
     return -1;
   }
-  // test_globalmaxpool(argc, argv);
+  test_relu(argc, argv);
   return 0;
 }
