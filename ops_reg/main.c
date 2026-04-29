@@ -28,6 +28,29 @@ static void unpack_nc1hwc2_fp16(const __fp16 *src, float *dst,
   }
 }
 
+static void unpack_nc1hwc2_fp16_plane_stride(const __fp16 *src, float *dst,
+    int batch, int channels, int height, int width,
+    int c2, int width_stride, size_t plane_stride) {
+  if (!src || !dst || batch <= 0 || channels <= 0 || height <= 0 || width <= 0) return;
+  if (c2 <= 0 || width_stride <= 0 || plane_stride == 0) return;
+  int c1 = (channels + c2 - 1) / c2;
+  for (int n = 0; n < batch; n++) {
+    for (int c = 0; c < channels; c++) {
+      int plane = c / c2;
+      int offset = c % c2;
+      size_t src_plane_base = ((size_t)n * c1 + plane) * plane_stride;
+      for (int h = 0; h < height; h++) {
+        size_t src_row_base = src_plane_base + (size_t)h * width_stride * c2;
+        size_t dst_row_base = ((((size_t)n * channels + c) * height) + h) * width;
+        for (int w = 0; w < width; w++) {
+          size_t src_idx = src_row_base + (size_t)w * c2 + offset;
+          dst[dst_row_base + w] = (float)src[src_idx];
+        }
+      }
+    }
+  }
+}
+
 static void report_conv2d_unpack_variant(const char *label, const __fp16 *src,
     const float *expected, int batch, int channels, int height, int width,
     int c2, int width_stride, float atol, float rtol) {
@@ -4745,6 +4768,7 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   }
   if (is_11555_35333_g5) {
     width_stride = config->in_width;
+    out_width_stride = 12;
   }
   if (config->kernel_h == 1 && config->kernel_w == 1) {
     int atoms = out_width * out_height;
@@ -5042,9 +5066,22 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
       free(output_flat);
     } else {
       int unpack_width_stride = out_width;
-      unpack_nc1hwc2_fp16(result, output_nchw,
-          config->batch, config->out_channels, out_height, out_width, unpack_c2, unpack_width_stride);
-      if (is_161818_161633) {
+      size_t plane_stride = 0;
+      if (is_11555_35333_g5) {
+        // This case pads one extra output row between channel planes.
+        plane_stride = (size_t)out_height * (size_t)unpack_width_stride * (size_t)unpack_c2
+            + (size_t)out_width_stride * 2u;
+      }
+      if (plane_stride > 0) {
+        unpack_nc1hwc2_fp16_plane_stride(result, output_nchw,
+            config->batch, config->out_channels, out_height, out_width,
+            unpack_c2, unpack_width_stride, plane_stride);
+      } else {
+        unpack_nc1hwc2_fp16(result, output_nchw,
+            config->batch, config->out_channels, out_height, out_width,
+            unpack_c2, unpack_width_stride);
+      }
+      if (is_161818_161633 || is_11555_35333_g5) {
         int stride_opts[] = {
           out_width,
           out_width_stride,
