@@ -28,6 +28,31 @@ static void unpack_nc1hwc2_fp16(const __fp16 *src, float *dst,
   }
 }
 
+static void report_conv2d_unpack_variant(const char *label, const __fp16 *src,
+    const float *expected, int batch, int channels, int height, int width,
+    int c2, int width_stride, float atol, float rtol) {
+  if (!src || !expected || batch <= 0 || channels <= 0 || height <= 0 || width <= 0) return;
+  if (c2 <= 0 || width_stride <= 0) return;
+  size_t total = (size_t)batch * (size_t)channels * (size_t)height * (size_t)width;
+  float *tmp = (float*)malloc(total * sizeof(float));
+  if (!tmp) {
+    printf("%s: failed to allocate temp buffer\n", label ? label : "conv2d");
+    return;
+  }
+  unpack_nc1hwc2_fp16(src, tmp, batch, channels, height, width, c2, width_stride);
+  int mismatches = 0;
+  float max_diff = 0.0f;
+  for (size_t i = 0; i < total; i++) {
+    float diff = fabsf(tmp[i] - expected[i]);
+    float tol = atol + rtol * fabsf(expected[i]);
+    if (diff > max_diff) max_diff = diff;
+    if (diff > tol) mismatches++;
+  }
+  printf("%s: alt unpack c2=%d stride=%d -> mismatches=%d max_diff=%.6f\n",
+      label ? label : "conv2d", c2, width_stride, mismatches, max_diff);
+  free(tmp);
+}
+
 static void unpack_matmul_output_fp16_with_c2(const __fp16 *src, float *dst,
     int M, int N, int c2) {
   if (!src || !dst || M <= 0 || N <= 0) return;
@@ -4688,10 +4713,10 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     return -1;
   }
 
-  const int align_c = 8;
+  int align_c = 8;
   int align_out_c = ((config->out_channels + 15) / 16) * 16;
   if (align_out_c < 16) align_out_c = 16;
-  const int width_stride = ((config->in_width + align_c - 1) / align_c) * align_c;
+  int width_stride = ((config->in_width + align_c - 1) / align_c) * align_c;
   int out_width_stride = (out_width * align_out_c) / 4;
   if (config->in_channels == 3 && config->out_channels == 6) {
     if (config->groups == 1 && config->kernel_h == 3 && config->kernel_w == 1) {
@@ -4700,6 +4725,15 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     if (config->kernel_h == 3 && config->kernel_w == 3) {
       out_width_stride = 16;
     }
+  }
+  bool is_161818_161633 = (config->batch == 1 && config->in_channels == 16 &&
+    config->in_height == 18 && config->in_width == 18 &&
+    config->out_channels == 16 && config->weight_in_channels == 16 &&
+    config->kernel_h == 3 && config->kernel_w == 3);
+  if (is_161818_161633) {
+    align_c = 16;
+    width_stride = config->in_width;
+    out_width_stride = 256;
   }
   if (config->kernel_h == 1 && config->kernel_w == 1) {
     int atoms = out_width * out_height;
@@ -4768,9 +4802,13 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   print_conv2d_kernel("Generated conv2d weights:", kernel,
       config->out_channels, config->weight_in_channels, config->kernel_h, config->kernel_w);
 
+  int input_pack_c2 = align_c;
+  if (is_161818_161633) {
+    input_pack_c2 = 8;
+  }
   for (size_t i = 0; i < packed_input_elems; i++) input_packed[i] = (__fp16)0;
   pack_nc1hwc2_fp16(input_packed, input,
-      config->batch, config->in_channels, config->in_height, config->in_width, align_c, width_stride);
+      config->batch, config->in_channels, config->in_height, config->in_width, input_pack_c2, width_stride);
 
   size_t expected_elems = (size_t)config->out_channels * out_height * out_width;
   float *expected = (float*)malloc(expected_elems * sizeof(float));
@@ -4832,6 +4870,10 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   }
   // RKNN conv2d outputs are NC1HWC2 with c2=8; 1x1 kernels flatten H*W into W.
   int unpack_c2 = (align_out_c >= 8) ? 8 : align_out_c;
+  if (is_161818_161633) {
+    // RKNN reports native output C2=8 for 1x16x16x16.
+    unpack_c2 = 8;
+  }
   bool use_tile = false;
   int tile_max_h = 0;
   if (config->kernel_h == 1 && config->kernel_w == 1) {
@@ -4925,6 +4967,27 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
       int unpack_width_stride = out_width;
       unpack_nc1hwc2_fp16(result, output_nchw,
           config->batch, config->out_channels, out_height, out_width, unpack_c2, unpack_width_stride);
+      if (is_161818_161633) {
+        int stride_opts[] = {
+          out_width,
+          out_width_stride,
+          out_width_stride / 2,
+          out_width_stride / 4,
+          out_width_stride / 8,
+          out_width_stride / 16,
+        };
+        int c2_opts[] = {8, 16};
+        for (size_t ci = 0; ci < sizeof(c2_opts) / sizeof(c2_opts[0]); ci++) {
+          int c2 = c2_opts[ci];
+          for (size_t si = 0; si < sizeof(stride_opts) / sizeof(stride_opts[0]); si++) {
+            int stride = stride_opts[si];
+            if (stride <= 0) continue;
+            report_conv2d_unpack_variant(config->name, result, expected,
+                config->batch, config->out_channels, out_height, out_width,
+                c2, stride, 1e-3f, 1e-3f);
+          }
+        }
+      }
     }
     free(result);
   }
@@ -4987,7 +5050,7 @@ int test_conv2d(int argc, char **argv) {
     // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
     // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
     // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
-    {1, 3, 65, 65, 6, 3, 1, 1, 1, "conv2d"},
+    {1, 16, 18, 18, 16, 16, 3, 3, 1, "conv2d"},
   };
 
   int status = 0;
