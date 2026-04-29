@@ -40,13 +40,13 @@ int main(int argc, char* argv[]) {
     // Check command line arguments
     if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " <operation> 1x<size>" << std::endl;
-        std::cerr << "Operations: mul, add, sub, div, and" << std::endl;
+        std::cerr << "Operations: mul, add, sub, div, and, xor" << std::endl;
         return -1;
     }
     
     // Parse operation from command line argument
     std::string operation = argv[1];
-    if (operation != "mul" && operation != "add" && operation != "sub" && operation != "div" && operation != "and") {
+    if (operation != "mul" && operation != "add" && operation != "sub" && operation != "div" && operation != "and" && operation != "xor") {
         std::cerr << "Error: Operation must be one of: 'mul', 'add', 'sub', 'div', 'and'" << std::endl;
         return -1;
     }

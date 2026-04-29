@@ -11,6 +11,7 @@
 break rknn_destroy
 commands
     printf "rknn_destroy============\n"
+    shell python3 dump.py 2 
    shell python3 dump.py 2 | grep -E "\[00.*]" | tee /tmp/ops_rknn_weight
 #   shell python3 dump.py 2 | grep -v -E "\[00.*]" 
    shell python3 dump.py 2 | grep EMIT | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' | sed 's/^.*EMIT(/EMIT(/' | grep -v "0x00000000" > /tmp/ops_rknn_emit
