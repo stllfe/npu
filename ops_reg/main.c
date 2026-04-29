@@ -156,6 +156,19 @@ static void report_matmul_unpack_alt(const char *name, const float *npu_output,
   free(tmp);
 }
 
+static void print_float_row_chunks(const float *row, int width, int row_len,
+    const char *fmt) {
+  for (int start = 0; start < width; start += row_len) {
+    printf("      ");
+    int end = start + row_len;
+    if (end > width) end = width;
+    for (int i = start; i < end; i++) {
+      printf(fmt, row[i]);
+    }
+  }
+  printf("\n");
+}
+
 static void print_conv1d_outputs(const char *title, const float *data,
     int batch, int channels, int width, int row_len) {
   printf("%s\n", title);
@@ -165,16 +178,7 @@ static void print_conv1d_outputs(const char *title, const float *data,
     for (int oc = 0; oc < channels; oc++) {
       printf("    Output Channel %d:\n", oc);
       const float *row = data + (((size_t)n * channels + oc) * width);
-      for (int start = 0; start < width; start += row_len) {
-        printf("      ");
-        int end = start + row_len;
-        if (end > width) end = width;
-        for (int i = start; i < end; i++) {
-          printf("%8.5f  ", row[i]);
-        }
-        // printf("\n");
-      }
-      printf("\n");
+      print_float_row_chunks(row, width, row_len, "%8.5f  ");
     }
   }
 }
@@ -184,274 +188,171 @@ static int align_up(int value, int align) {
   return ((value + align - 1) / align) * align;
 }
 
-static const char *kConv1dFixtureDefault = "../ops_rknn/conv1d_simple_data";
-static const char *kConv1dFixtureAlternate = "npu/ops_rknn/conv1d_simple_data";
-
-static int load_fp16_fixture(const char *dir, const char *name,
-    __fp16 *dst, size_t elems) {
-  char path[512];
-  int len = snprintf(path, sizeof(path), "%s/%s", dir, name);
-  if (len < 0 || len >= (int)sizeof(path)) return 0;
-  FILE *file = fopen(path, "rb");
-  if (!file) return 0;
-  size_t read = fread(dst, sizeof(__fp16), elems, file);
-  fclose(file);
-  return read == elems;
-}
-
-static int load_conv1d_fixtures_from(const char *base_dir, const char *fixture_dir,
-    __fp16 *input, size_t input_elems,
-    __fp16 *kernel, size_t kernel_elems) {
-  char dir[512];
-  int len = snprintf(dir, sizeof(dir), "%s/%s", base_dir, fixture_dir);
-  if (len < 0 || len >= (int)sizeof(dir)) return 0;
-  if (!load_fp16_fixture(dir, "input.bin", input, input_elems)) return 0;
-  if (!load_fp16_fixture(dir, "kernel.bin", kernel, kernel_elems)) return 0;
-  return 1;
-}
-
-static int load_conv1d_fixtures(const char *fixture_dir,
-    __fp16 *input, size_t input_elems,
-    __fp16 *kernel, size_t kernel_elems) {
-  if (!fixture_dir) return 0;
-  const char *env_base = getenv("CONV1D_DATA_DIR");
-  if (env_base && load_conv1d_fixtures_from(env_base, fixture_dir, input, input_elems,
-        kernel, kernel_elems)) {
-    return 1;
-  }
-  if (load_conv1d_fixtures_from(kConv1dFixtureDefault, fixture_dir, input, input_elems,
-        kernel, kernel_elems)) {
-    return 1;
-  }
-  if (load_conv1d_fixtures_from(kConv1dFixtureAlternate, fixture_dir, input, input_elems,
-        kernel, kernel_elems)) {
-    return 1;
-  }
-  return 0;
-}
-
-static void mt_seed(Mt19937 *rng, uint32_t seed) {
-  rng->mt[0] = seed;
-  for (int i = 1; i < 624; i++) {
-    rng->mt[i] = 1812433253U * (rng->mt[i-1] ^ (rng->mt[i-1] >> 30)) + (uint32_t)i;
-  }
-  rng->index = 624;
-}
-
-static uint32_t mt_extract(Mt19937 *rng) {
-  const uint32_t mag01[2] = {0U, 0x9908b0dfU};
-  if (rng->index >= 624) {
-    int kk;
-    for (kk = 0; kk < 624 - 397; kk++) {
-      uint32_t y = (rng->mt[kk] & 0x80000000U) | (rng->mt[kk+1] & 0x7fffffffU);
-      rng->mt[kk] = rng->mt[kk + 397] ^ (y >> 1) ^ mag01[y & 1U];
+static void print_fp16_tensor_3d(const char *title, const __fp16 *data,
+    int dim0, int dim1, int dim2,
+    const char *label0, const char *label1) {
+  printf("%s\n", title);
+  for (int i0 = 0; i0 < dim0; i0++) {
+    printf("  %s=%d\n", label0, i0);
+    for (int i1 = 0; i1 < dim1; i1++) {
+      printf("    %s=%d: ", label1, i1);
+      size_t base = ((size_t)i0 * dim1 + i1) * dim2;
+      for (int i2 = 0; i2 < dim2; i2++) {
+        printf("%8.5f ", (float)data[base + (size_t)i2]);
+      }
+      printf("\n");
     }
-    for (; kk < 623; kk++) {
-      uint32_t y = (rng->mt[kk] & 0x80000000U) | (rng->mt[kk+1] & 0x7fffffffU);
-      rng->mt[kk] = rng->mt[kk + (397 - 624)] ^ (y >> 1) ^ mag01[y & 1U];
-    }
-    uint32_t y = (rng->mt[623] & 0x80000000U) | (rng->mt[0] & 0x7fffffffU);
-    rng->mt[623] = rng->mt[396] ^ (y >> 1) ^ mag01[y & 1U];
-    rng->index = 0;
   }
-  uint32_t y = rng->mt[rng->index++];
-  y ^= (y >> 11);
-  y ^= (y << 7) & 0x9d2c5680U;
-  y ^= (y << 15) & 0xefc60000U;
-  y ^= (y >> 18);
-  return y;
 }
 
-static float mt_uniform(Mt19937 *rng, float low, float high) {
-  const double a = (double)(mt_extract(rng) >> 5);
-  const double b = (double)(mt_extract(rng) >> 6);
-  const double random = (a * 67108864.0 + b) / 9007199254740992.0;
-  return (float)(low + (high - low) * random);
+static void print_fp16_tensor_4d(const char *title, const __fp16 *data,
+    int dim0, int dim1, int dim2, int dim3,
+    const char *label0, const char *label1, const char *label2) {
+  printf("%s\n", title);
+  for (int i0 = 0; i0 < dim0; i0++) {
+    printf("  %s=%d\n", label0, i0);
+    for (int i1 = 0; i1 < dim1; i1++) {
+      printf("    %s=%d\n", label1, i1);
+      for (int i2 = 0; i2 < dim2; i2++) {
+        printf("      %s=%d: ", label2, i2);
+        size_t base = (((size_t)i0 * dim1 + i1) * dim2 + i2) * dim3;
+        for (int i3 = 0; i3 < dim3; i3++) {
+          printf("%8.5f ", (float)data[base + (size_t)i3]);
+        }
+        printf("\n");
+      }
+    }
+  }
+}
+
+static void print_fp32_tensor_4d(const char *title, const float *data,
+    int dim0, int dim1, int dim2, int dim3,
+    const char *label0, const char *label1, const char *label2) {
+  printf("%s\n", title);
+  for (int i0 = 0; i0 < dim0; i0++) {
+    printf("  %s=%d\n", label0, i0);
+    for (int i1 = 0; i1 < dim1; i1++) {
+      printf("    %s=%d\n", label1, i1);
+      for (int i2 = 0; i2 < dim2; i2++) {
+        printf("      %s=%d: ", label2, i2);
+        size_t base = (((size_t)i0 * dim1 + i1) * dim2 + i2) * dim3;
+        for (int i3 = 0; i3 < dim3; i3++) {
+          printf("%8.5f ", data[base + (size_t)i3]);
+        }
+        printf("\n");
+      }
+    }
+  }
 }
 
 static void print_conv1d_tensor(const char *title, const __fp16 *data,
     int batch, int channels, int width) {
-  printf("%s\n", title);
-  for (int n = 0; n < batch; n++) {
-    printf("  batch=%d\n", n);
-    for (int c = 0; c < channels; c++) {
-      printf("    channel=%d: ", c);
-      for (int w = 0; w < width; w++) {
-        size_t idx = ((size_t)n * channels + c) * width + w;
-        printf("%8.5f ", (float)data[idx]);
-      }
-      printf("\n");
-    }
-  }
+  print_fp16_tensor_3d(title, data, batch, channels, width, "batch", "channel");
 }
 
 static void print_conv1d_kernel(const char *title, const __fp16 *data,
     int out_channels, int in_channels, int kernel_size) {
-  printf("%s\n", title);
-  for (int oc = 0; oc < out_channels; oc++) {
-    printf("  out_channel=%d\n", oc);
-    for (int ic = 0; ic < in_channels; ic++) {
-      printf("    in_channel=%d: ", ic);
-      for (int k = 0; k < kernel_size; k++) {
-        size_t idx = ((size_t)oc * in_channels + ic) * kernel_size + k;
-        printf("%8.5f ", (float)data[idx]);
-      }
-      printf("\n");
-    }
-  }
+  print_fp16_tensor_3d(title, data, out_channels, in_channels, kernel_size,
+      "out_channel", "in_channel");
 }
 
 static void print_conv2d_input(const char *title, const __fp16 *data,
     int batch, int channels, int height, int width) {
-  printf("%s\n", title);
-  for (int n = 0; n < batch; n++) {
-    printf("  batch=%d\n", n);
-    for (int c = 0; c < channels; c++) {
-      printf("    channel=%d\n", c);
-      for (int h = 0; h < height; h++) {
-        printf("      h=%d: ", h);
-        for (int w = 0; w < width; w++) {
-          size_t idx = ((((size_t)n * channels + c) * height) + h) * width + w;
-          printf("%8.5f ", (float)data[idx]);
-        }
-        printf("\n");
-      }
-    }
-  }
+  print_fp16_tensor_4d(title, data, batch, channels, height, width,
+      "batch", "channel", "h");
 }
 
 static void print_conv2d_kernel(const char *title, const __fp16 *data,
     int out_channels, int in_channels, int kernel_h, int kernel_w) {
-  printf("%s\n", title);
-  for (int oc = 0; oc < out_channels; oc++) {
-    printf("  out_channel=%d\n", oc);
-    for (int ic = 0; ic < in_channels; ic++) {
-      printf("    in_channel=%d\n", ic);
-      for (int kh = 0; kh < kernel_h; kh++) {
-        printf("      kh=%d: ", kh);
-        for (int kw = 0; kw < kernel_w; kw++) {
-          size_t idx = ((((size_t)oc * in_channels + ic) * kernel_h + kh) * kernel_w) + kw;
-          printf("%8.5f ", (float)data[idx]);
-        }
-        printf("\n");
-      }
-    }
-  }
+  print_fp16_tensor_4d(title, data, out_channels, in_channels, kernel_h, kernel_w,
+      "out_channel", "in_channel", "kh");
 }
 
 static void print_conv2d_output(const char *title, const float *data,
     int batch, int channels, int height, int width) {
-  printf("%s\n", title);
-  for (int n = 0; n < batch; n++) {
-    printf("  batch=%d\n", n);
-    for (int oc = 0; oc < channels; oc++) {
-      printf("    out_channel=%d\n", oc);
-      for (int h = 0; h < height; h++) {
-        printf("      h=%d: ", h);
-        const float *row = data + ((((size_t)n * channels + oc) * height + h) * width);
-        for (int w = 0; w < width; w++) {
-          printf("%8.5f ", row[w]);
-        }
-        printf("\n");
-      }
+  print_fp32_tensor_4d(title, data, batch, channels, height, width,
+      "batch", "out_channel", "h");
+}
+
+typedef float (*print_value_fn)(const void *data, size_t idx);
+
+static float read_fp16_value(const void *data, size_t idx) {
+  return (float)((const __fp16 *)data)[idx];
+}
+
+static float read_f32_value(const void *data, size_t idx) {
+  return ((const float *)data)[idx];
+}
+
+static void print_row(const void *data, int cols, int row,
+    print_value_fn read_value, const char *fmt) {
+  printf("  [");
+  size_t base = (size_t)row * (size_t)cols;
+  for (int c = 0; c < cols; c++) {
+    printf(fmt, read_value(data, base + (size_t)c));
+    if (c + 1 < cols) printf(", ");
+  }
+  printf("]");
+}
+
+static void print_grid(const char *label, const void *data,
+    int rows, int cols, print_value_fn read_value) {
+  if (!data) {
+    printf("%s: (null)\n", label);
+    return;
+  }
+  printf("%s (%dx%d):\n", label, rows, cols);
+  for (int r = 0; r < rows; r++) {
+    printf("  ");
+    size_t base = (size_t)r * (size_t)cols;
+    for (int c = 0; c < cols; c++) {
+      printf("%7.3f ", read_value(data, base + (size_t)c));
     }
+    printf("\n");
   }
 }
 
-static void print_fp16_row(const __fp16 *data, int cols, int row) {
-  printf("  [");
-  for (int c = 0; c < cols; c++) {
-    printf("%6.2f", (float)data[row * cols + c]);
-    if (c + 1 < cols) printf(", ");
+static void print_matrix(const char *title, const void *data,
+    int rows, int cols, const char *dtype, print_value_fn read_value,
+    const char *fmt) {
+  printf("%s tensor([\n", title);
+  if (rows <= 4) {
+    for (int r = 0; r < rows; r++) {
+      print_row(data, cols, r, read_value, fmt);
+      printf(r + 1 < rows ? ",\n" : "\n");
+    }
+  } else {
+    print_row(data, cols, 0, read_value, fmt);
+    printf(",\n");
+    print_row(data, cols, 1, read_value, fmt);
+    printf(",\n");
+    printf("  ...,\n");
+    print_row(data, cols, rows - 2, read_value, fmt);
+    printf(",\n");
+    print_row(data, cols, rows - 1, read_value, fmt);
+    printf("\n");
   }
-  printf("]");
-}
-
-static void print_float_row(const float *data, int cols, int row) {
-  printf("  [");
-  for (int c = 0; c < cols; c++) {
-    printf("%9.6f", data[row * cols + c]);
-    if (c + 1 < cols) printf(", ");
-  }
-  printf("]");
+  printf("], shape=(%d, %d), dtype=%s)\n", rows, cols, dtype);
 }
 
 static void print_fp16_grid(const char *label, const __fp16 *data,
     int rows, int cols) {
-  if (!data) {
-    printf("%s: (null)\n", label);
-    return;
-  }
-  printf("%s (%dx%d):\n", label, rows, cols);
-  for (int r = 0; r < rows; r++) {
-    printf("  ");
-    for (int c = 0; c < cols; c++) {
-      size_t idx = (size_t)r * cols + c;
-      printf("%7.3f ", (float)data[idx]);
-    }
-    printf("\n");
-  }
+  print_grid(label, data, rows, cols, read_fp16_value);
 }
 
 static void print_fp32_grid(const char *label, const float *data,
     int rows, int cols) {
-  if (!data) {
-    printf("%s: (null)\n", label);
-    return;
-  }
-  printf("%s (%dx%d):\n", label, rows, cols);
-  for (int r = 0; r < rows; r++) {
-    printf("  ");
-    for (int c = 0; c < cols; c++) {
-      size_t idx = (size_t)r * cols + c;
-      printf("%7.3f ", data[idx]);
-    }
-    printf("\n");
-  }
+  print_grid(label, data, rows, cols, read_f32_value);
 }
 
 static void print_fp16_matrix(const char *title, const __fp16 *data,
     int rows, int cols) {
-  printf("%s tensor([\n", title);
-  if (rows <= 4) {
-    for (int r = 0; r < rows; r++) {
-      print_fp16_row(data, cols, r);
-      printf(r + 1 < rows ? ",\n" : "\n");
-    }
-  } else {
-    print_fp16_row(data, cols, 0);
-    printf(",\n");
-    print_fp16_row(data, cols, 1);
-    printf(",\n");
-    printf("  ...,\n");
-    print_fp16_row(data, cols, rows - 2);
-    printf(",\n");
-    print_fp16_row(data, cols, rows - 1);
-    printf("\n");
-  }
-  printf("], shape=(%d, %d), dtype=float16)\n", rows, cols);
+  print_matrix(title, data, rows, cols, "float16", read_fp16_value, "%6.2f");
 }
 
 static void print_float_matrix(const char *title, const float *data,
     int rows, int cols) {
-  printf("%s tensor([\n", title);
-  if (rows <= 4) {
-    for (int r = 0; r < rows; r++) {
-      print_float_row(data, cols, r);
-      printf(r + 1 < rows ? ",\n" : "\n");
-    }
-  } else {
-    print_float_row(data, cols, 0);
-    printf(",\n");
-    print_float_row(data, cols, 1);
-    printf(",\n");
-    printf("  ...,\n");
-    print_float_row(data, cols, rows - 2);
-    printf(",\n");
-    print_float_row(data, cols, rows - 1);
-    printf("\n");
-  }
-  printf("], shape=(%d, %d), dtype=float32)\n", rows, cols);
+  print_matrix(title, data, rows, cols, "float32", read_f32_value, "%9.6f");
 }
 
 void breakpoint(){}
@@ -1108,6 +1009,8 @@ static int run_globalavgpool_case(const AvgpoolTestConfig *config) {
   const char *name = config->name ? config->name : "globalavgpool_case";
   int rows = config->rows > 0 ? config->rows : 1;
   int cols = config->cols > 0 ? config->cols : 1;
+  // This test is 2D-only; it implicitly corresponds to N=1, C=1, H=rows, W=cols.
+  // It does not exercise kernel/stride/pad parameters like the rknn pool configs.
   size_t total_elements = (size_t)rows * cols;
   if (total_elements == 0 || total_elements > 65536) {
     printf("%s: invalid element count %zu\n", name, total_elements);
@@ -2707,6 +2610,7 @@ static int test_globalavgpool(int argc, char **argv) {
   }
 
   static const AvgpoolTestConfig configs[] = {
+    // Corresponds to a 1x1x4x4 input for global average pooling.
     {"globalavgpool_4x4", 4, 4},
   };
 
@@ -5345,29 +5249,18 @@ static int run_conv1d_case(const Conv1dTestConfig *config) {
     return -1;
   }
 
-  int fixtures_loaded = load_conv1d_fixtures(config->fixture_dir,
-      input, input_elems, kernel, kernel_elems);
-  if (fixtures_loaded) {
-    printf("Loaded fixtures for %s from %s\n", config->name, config->fixture_dir);
-  } else if (config->fixture_dir) {
-    printf("Missing fixtures for %s (%s), falling back to RNG\n",
-        config->name, config->fixture_dir);
+  const float low = -2.0f;
+  const float high = 2.0f;
+  Mt19937 rng;
+  mt_seed(&rng, 0);
+  for (size_t idx = 0; idx < input_elems; idx++) {
+    input[idx] = (__fp16)mt_uniform(&rng, low, high);
   }
-
-  if (!fixtures_loaded) {
-    const float low = -2.0f;
-    const float high = 2.0f;
-    Mt19937 rng;
-    mt_seed(&rng, 0);
-    for (size_t idx = 0; idx < input_elems; idx++) {
-      input[idx] = (__fp16)mt_uniform(&rng, low, high);
-    }
-    size_t weight_idx = 0;
-    for (int oc = 0; oc < config->out_channels; oc++) {
-      for (int ic = 0; ic < config->weight_in_channels; ic++) {
-        for (int k = 0; k < config->kernel_size; k++) {
-          kernel[weight_idx++] = (__fp16)mt_uniform(&rng, low, high);
-        }
+  size_t weight_idx = 0;
+  for (int oc = 0; oc < config->out_channels; oc++) {
+    for (int ic = 0; ic < config->weight_in_channels; ic++) {
+      for (int k = 0; k < config->kernel_size; k++) {
+        kernel[weight_idx++] = (__fp16)mt_uniform(&rng, low, high);
       }
     }
   }
@@ -5504,22 +5397,22 @@ static int parse_conv1d_index(const char *selector, long *out_index) {
 
 int test_conv1d(int argc, char **argv) {
   static const Conv1dTestConfig configs[] = {
-      {"conv1d_bs1", 1, 1, 11, 6, 1, 1, 0, "conv1d_simple_bs1"},
-      {"conv1d_bs8", 8, 1, 11, 6, 1, 1, 0, "conv1d_simple_bs8"},
-      {"conv1d_bs1_612", 1, 1, 11, 6, 1, 2, 0, "conv1d_simple_bs1_k2"},
-      {"conv1d_bs1_615", 1, 1, 11, 6, 1, 5, 0, "conv1d_simple_bs1_k5"},
-      {"conv1d_bs1_1311_631", 1, 3, 11, 6, 3, 1, 0, "conv1d_simple_bs1_c3_k1"},
-      {"conv1d_bs1_1311_632", 1, 3, 11, 6, 3, 2, 0, "conv1d_simple_bs1_c3_k2"},
-      {"conv1d_bs1_1311_635", 1, 3, 11, 6, 3, 5, 0, "conv1d_simple_bs1_c3_k5"},
-      {"conv1d_bs1_1311_615", 1, 3, 11, 6, 1, 5, 3, "conv1d_simple_bs1_c3_g3_k5"},
-      {"conv1d_bs8_8111_611", 8, 1, 11, 6, 1, 1, 0, "conv1d_simple_bs8_c1_k1"},
-      {"conv1d_bs8_8111_612", 8, 1, 11, 6, 1, 2, 0, "conv1d_simple_bs8_c1_k2"},
-      {"conv1d_bs8_8111_612", 8, 1, 11, 6, 1, 2, 0, "conv1d_simple_bs8_c1_k2"},
-      {"conv1d_bs8_8111_615", 8, 1, 11, 6, 1, 5, 0, "conv1d_simple_bs8_c1_k5"},
-      {"conv1d_bs8_8311_631", 8, 3, 11, 6, 3, 1, 0, "conv1d_simple_bs8_c3_k1"},
-      {"conv1d_bs8_8311_632", 8, 3, 11, 6, 3, 2, 0, "conv1d_simple_bs8_c3_k2"},
-      {"conv1d_bs8_8311_635", 8, 3, 11, 6, 3, 5, 0, "conv1d_simple_bs8_c3_k2"},
-      {"conv1d_bs8_8311_635", 8, 3, 11, 6, 1, 5, 0, "conv1d_simple_bs8_c3_g1_k5"},
+      {"conv1d_bs1", 1, 1, 11, 6, 1, 1, 0},
+      {"conv1d_bs8", 8, 1, 11, 6, 1, 1, 0},
+      {"conv1d_bs1_612", 1, 1, 11, 6, 1, 2, 0},
+      {"conv1d_bs1_615", 1, 1, 11, 6, 1, 5, 0},
+      {"conv1d_bs1_1311_631", 1, 3, 11, 6, 3, 1, 0},
+      {"conv1d_bs1_1311_632", 1, 3, 11, 6, 3, 2, 0},
+      {"conv1d_bs1_1311_635", 1, 3, 11, 6, 3, 5, 0},
+      {"conv1d_bs1_1311_615", 1, 3, 11, 6, 1, 5, 3},
+      {"conv1d_bs8_8111_611", 8, 1, 11, 6, 1, 1, 0},
+      {"conv1d_bs8_8111_612", 8, 1, 11, 6, 1, 2, 0},
+      {"conv1d_bs8_8111_612", 8, 1, 11, 6, 1, 2, 0},
+      {"conv1d_bs8_8111_615", 8, 1, 11, 6, 1, 5, 0},
+      {"conv1d_bs8_8311_631", 8, 3, 11, 6, 3, 1, 0},
+      {"conv1d_bs8_8311_632", 8, 3, 11, 6, 3, 2, 0},
+      {"conv1d_bs8_8311_635", 8, 3, 11, 6, 3, 5, 0},
+      {"conv1d_bs8_8311_635", 8, 3, 11, 6, 1, 5, 0},
   };
   const size_t config_count = sizeof(configs) / sizeof(configs[0]);
   if (argc > 1) {
@@ -5539,8 +5432,7 @@ int test_conv1d(int argc, char **argv) {
       }
       int matched = 0;
       for (size_t i = 0; i < config_count; i++) {
-        if ((configs[i].name && strcmp(configs[i].name, selector) == 0) ||
-            (configs[i].fixture_dir && strcmp(configs[i].fixture_dir, selector) == 0)) {
+        if (configs[i].name && strcmp(configs[i].name, selector) == 0) {
           matched = 1;
           if (run_conv1d_case(&configs[i]) != 0) status = -1;
         }
@@ -6584,6 +6476,9 @@ int main(int argc, char **argv) {
     printf("Unknown test '%s'\n", argv[1]);
     return -1;
   }
-  test_conv2d(argc, argv);
+  // test_conv2d(argc, argv);
+  // test_globalavgpool(argc, argv);
+  // test_globalminpool(argc, argv);
+  // test_globalmaxpool(argc, argv);
   return 0;
 }

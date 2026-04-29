@@ -35,3 +35,6 @@ main
 ops_rknn/matmul_api
 ops_rknn/alloc_weight_loop_rknn
 ops_reg/alloc_weight_loop
+ops_ref/*
+ops_minimal/*
+ops_common/*

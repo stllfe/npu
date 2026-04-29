@@ -4131,7 +4131,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_PPU_RDMA_RDMA_SRC_LINE_STRIDE, PPU_RDMA_RDMA_SRC_LINE_STRIDE_SRC_LINE_STRIDE(4));
          EMIT(REG_PPU_RDMA_RDMA_SRC_SURF_STRIDE, PPU_RDMA_RDMA_SRC_SURF_STRIDE_SRC_SURF_STRIDE(16));
          EMIT(REG_PPU_RDMA_RDMA_DATA_FORMAT, PPU_RDMA_RDMA_DATA_FORMAT_IN_PRECISION(2));
+         EMIT(REG_PPU_RDMA_RDMA_OPERATION_ENABLE, PPU_RDMA_RDMA_OPERATION_ENABLE_OP_EN(1));
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(48));
+         goto alu_case_done;
       }
 
       alut_case_globalmaxpool:{
@@ -4154,7 +4156,9 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_PPU_RDMA_RDMA_SRC_LINE_STRIDE, PPU_RDMA_RDMA_SRC_LINE_STRIDE_SRC_LINE_STRIDE(4));
          EMIT(REG_PPU_RDMA_RDMA_SRC_SURF_STRIDE, PPU_RDMA_RDMA_SRC_SURF_STRIDE_SRC_SURF_STRIDE(16));
          EMIT(REG_PPU_RDMA_RDMA_DATA_FORMAT, PPU_RDMA_RDMA_DATA_FORMAT_IN_PRECISION(2));
+         EMIT(REG_PPU_RDMA_RDMA_OPERATION_ENABLE, PPU_RDMA_RDMA_OPERATION_ENABLE_OP_EN(1));
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(48));
+         goto alu_case_done;
       }
 
       alu_case_globalavgpool:{
@@ -4200,6 +4204,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_PPU_RDMA_RDMA_DATA_FORMAT, PPU_RDMA_RDMA_DATA_FORMAT_IN_PRECISION(2));
          EMIT(REG_PPU_RDMA_RDMA_OPERATION_ENABLE, PPU_RDMA_RDMA_OPERATION_ENABLE_OP_EN(1));
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(48));
+         goto alu_case_done;
       }
 
       alu_case_default: {
@@ -4412,7 +4417,8 @@ struct MemHandles createRegCmd(int fd, size_t input_size, size_t weights_size, s
       task->op_idx = 1;
       uint32_t enable_mask = is_small ? 0x60 : 0xd;
       uint32_t int_mask = is_small ? 0xc00 : 0x300;
-      if (current_alu_algorithm == 24) {
+      if (current_alu_algorithm == 24 || current_alu_algorithm == 25 ||
+          current_alu_algorithm == 26 || current_alu_algorithm == 27) {
          enable_mask = 0x60; // PPU + PPU_RDMA
          int_mask = 0xc00;   // PPU group interrupts
       }
@@ -4832,6 +4838,8 @@ __fp16* float16_alu_op(__fp16* a, __fp16* b, uint32_t alu_algorithm, int size)
 
    mem_sync(fd, handles.weights_obj, 0, handles.weights_alloc_size, RKNPU_MEM_SYNC_TO_DEVICE);
    mem_sync(fd, handles.input_obj, 0, handles.input_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   mem_sync(fd, handles.tasks_obj, 0, handles.tasks_size, RKNPU_MEM_SYNC_TO_DEVICE);
+   mem_sync(fd, handles.output_obj, 0, handles.output_size, RKNPU_MEM_SYNC_TO_DEVICE);
    int ret = submitTask(fd, handles.tasks_obj, handles.task_count);
    if(ret < 0) {
       printf("RKNPU_SUBMIT failed %d\n",ret);
@@ -4956,4 +4964,4 @@ int8_t* int8_alu_op(int8_t* a, int8_t* b, uint32_t alu_algorithm)
 }
 #endif
 
-#endif /* RKNNOPS_H */
+#endif

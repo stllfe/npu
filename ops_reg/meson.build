@@ -198,11 +198,12 @@ ops_reg_smoke_cases = [
   'rounddown',
   'where',
   'relu',
-  'maxpool',
   'minpool',
+  'maxpool',
   'avgpool',
-  'globalmaxpool',
   'globalminpool',
+  'globalmaxpool',
+  'globalavgpool',
 ]
 
 sh_prog = find_program('sh')
