@@ -4722,6 +4722,150 @@ typedef struct {
   const char *name;
 } Conv2dTestConfig;
 
+static int run_conv2d_exec(const Conv2dTestConfig *config, const __fp16 *input,
+    __fp16 *npu_kernel, size_t input_elems, size_t expanded_weight_elems,
+    int out_height, int out_width, int width_stride, int out_width_stride,
+    int align_c, int align_out_c, int unpack_c2,
+    bool is_161818_161633, bool is_11555_35333_g5,
+    const float *expected, float *output_nchw) {
+  if (!config || !input || !npu_kernel || !output_nchw || !expected) return -1;
+
+  set_conv2d_params(config->batch, config->in_channels, config->in_height, config->in_width,
+    config->out_channels, config->kernel_h, config->kernel_w, config->groups,
+    out_height, out_width, width_stride, out_width_stride, align_c, align_out_c);
+
+  bool use_tile = false;
+  int tile_max_h = 0;
+  if (config->kernel_h == 1 && config->kernel_w == 1) {
+    tile_max_h = 11264 / width_stride;
+    if (tile_max_h < 1) tile_max_h = 1;
+    use_tile = (out_height > tile_max_h);
+  }
+
+  if (use_tile) {
+    for (int row_offset = 0; row_offset < out_height; row_offset += tile_max_h) {
+      int tile_h = out_height - row_offset;
+      if (tile_h > tile_max_h) tile_h = tile_max_h;
+      size_t tile_input_elems = (size_t)config->batch * (size_t)config->in_channels *
+          (size_t)tile_h * (size_t)config->in_width;
+      __fp16 *tile_input = (__fp16*)malloc(tile_input_elems * sizeof(__fp16));
+      if (!tile_input) {
+        printf("failed to allocate tile input for %s\n", config->name);
+        return -1;
+      }
+      for (int n = 0; n < config->batch; n++) {
+        for (int c = 0; c < config->in_channels; c++) {
+          size_t src_base = (((size_t)n * config->in_channels + c) * config->in_height + row_offset)
+              * config->in_width;
+          size_t dst_base = (((size_t)n * config->in_channels + c) * (size_t)tile_h) * config->in_width;
+          memcpy(tile_input + dst_base, input + src_base, (size_t)tile_h * config->in_width * sizeof(__fp16));
+        }
+      }
+      int tile_atoms = out_width * tile_h;
+      int tile_out_width_stride = (tile_atoms < 4) ? tile_atoms : ((tile_atoms + 3) & ~3);
+      set_conv2d_params(config->batch, config->in_channels, tile_h, config->in_width,
+        config->out_channels, config->kernel_h, config->kernel_w, config->groups,
+        tile_h, out_width, width_stride, tile_out_width_stride, align_c, align_out_c);
+      __fp16 *result = float16_conv2d(tile_input, npu_kernel, 13,
+          (int)tile_input_elems, (int)expanded_weight_elems);
+      if (result == NULL) {
+        printf("float16_conv2d returned NULL for %s\n", config->name);
+        free(tile_input);
+        return -1;
+      }
+      int flat_width = tile_h * out_width;
+      size_t flat_elems = (size_t)config->batch * (size_t)config->out_channels * (size_t)flat_width;
+      float *output_flat = (float*)malloc(flat_elems * sizeof(float));
+      if (!output_flat) {
+        printf("failed to allocate flat output buffer for %s\n", config->name);
+        free(result);
+        free(tile_input);
+        return -1;
+      }
+      unpack_nc1hwc2_fp16(result, output_flat,
+          config->batch, config->out_channels, 1, flat_width, unpack_c2, tile_out_width_stride);
+      free(result);
+      for (int n = 0; n < config->batch; n++) {
+        for (int oc = 0; oc < config->out_channels; oc++) {
+          size_t src_base = ((size_t)n * config->out_channels + oc) * (size_t)flat_width;
+          size_t dst_base = ((size_t)n * config->out_channels + oc) * (size_t)out_height * (size_t)out_width;
+          dst_base += (size_t)row_offset * (size_t)out_width;
+          memcpy(output_nchw + dst_base, output_flat + src_base, (size_t)flat_width * sizeof(float));
+        }
+      }
+      free(output_flat);
+      free(tile_input);
+    }
+    return 0;
+  }
+
+  __fp16 *result = float16_conv2d((__fp16*)input, npu_kernel, 13,
+      (int)input_elems, (int)expanded_weight_elems);
+  if (result == NULL) {
+    printf("float16_conv2d returned NULL for %s\n", config->name);
+    return -1;
+  }
+  if (config->kernel_h == 1 && config->kernel_w == 1) {
+    int flat_width = out_height * out_width;
+    size_t flat_elems = (size_t)config->batch * (size_t)config->out_channels * (size_t)flat_width;
+    float *output_flat = (float*)malloc(flat_elems * sizeof(float));
+    if (!output_flat) {
+      printf("failed to allocate flat output buffer for %s\n", config->name);
+      free(result);
+      return -1;
+    }
+    unpack_nc1hwc2_fp16(result, output_flat,
+        config->batch, config->out_channels, 1, flat_width, unpack_c2, out_width_stride);
+    for (int n = 0; n < config->batch; n++) {
+      for (int oc = 0; oc < config->out_channels; oc++) {
+        size_t src_base = ((size_t)n * config->out_channels + oc) * (size_t)flat_width;
+        size_t dst_base = ((size_t)n * config->out_channels + oc) * (size_t)out_height * (size_t)out_width;
+        memcpy(output_nchw + dst_base, output_flat + src_base, (size_t)flat_width * sizeof(float));
+      }
+    }
+    free(output_flat);
+  } else {
+    int unpack_width_stride = out_width;
+    size_t plane_stride = 0;
+    if (is_11555_35333_g5) {
+      plane_stride = (size_t)out_height * (size_t)unpack_width_stride * (size_t)unpack_c2
+          + (size_t)out_width_stride * 2u;
+    }
+    if (plane_stride > 0) {
+      unpack_nc1hwc2_fp16_plane_stride(result, output_nchw,
+          config->batch, config->out_channels, out_height, out_width,
+          unpack_c2, unpack_width_stride, plane_stride);
+    } else {
+      unpack_nc1hwc2_fp16(result, output_nchw,
+          config->batch, config->out_channels, out_height, out_width,
+          unpack_c2, unpack_width_stride);
+    }
+    if (is_161818_161633 || is_11555_35333_g5) {
+      int stride_opts[] = {
+        out_width,
+        out_width_stride,
+        out_width_stride / 2,
+        out_width_stride / 4,
+        out_width_stride / 8,
+        out_width_stride / 16,
+      };
+      int c2_opts[] = {8, 16};
+      for (size_t ci = 0; ci < sizeof(c2_opts) / sizeof(c2_opts[0]); ci++) {
+        int c2 = c2_opts[ci];
+        for (size_t si = 0; si < sizeof(stride_opts) / sizeof(stride_opts[0]); si++) {
+          int stride = stride_opts[si];
+          if (stride <= 0) continue;
+          report_conv2d_unpack_variant(config->name, result, expected,
+              config->batch, config->out_channels, out_height, out_width,
+              c2, stride, 1e-3f, 1e-3f);
+        }
+      }
+    }
+  }
+  free(result);
+  return 0;
+}
+
 static int run_conv2d_case(const Conv2dTestConfig *config) {
   if (!config) return -1;
   int groups = config->groups > 0 ? config->groups : (config->in_channels / config->weight_in_channels);
@@ -4749,19 +4893,20 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
       out_width_stride = 16;
     }
   }
-  bool is_161818_161633 = (config->batch == 1 && config->in_channels == 16 &&
+  int batch_for_hw = (config->batch > 1) ? 1 : config->batch;
+  bool is_161818_161633 = (batch_for_hw == 1 && config->in_channels == 16 &&
     config->in_height == 18 && config->in_width == 18 &&
     config->out_channels == 16 && config->weight_in_channels == 16 &&
     config->kernel_h == 3 && config->kernel_w == 3);
-  bool is_1157_6133 = (config->batch == 1 && config->in_channels == 1 &&
+  bool is_1157_6133 = (batch_for_hw == 1 && config->in_channels == 1 &&
     config->in_height == 5 && config->in_width == 7 &&
     config->out_channels == 6 && config->weight_in_channels == 1 &&
     config->kernel_h == 3 && config->kernel_w == 3 && config->groups == 1);
-  bool is_11555_35333_g5 = (config->batch == 1 && config->in_channels == 15 &&
+  bool is_11555_35333_g5 = (batch_for_hw == 1 && config->in_channels == 15 &&
     config->in_height == 5 && config->in_width == 5 &&
     config->out_channels == 35 && config->weight_in_channels == 3 &&
     config->kernel_h == 3 && config->kernel_w == 3 && groups == 5);
-  bool is_131128_3133_g3 = (config->batch == 1 && config->in_channels == 3 &&
+  bool is_131128_3133_g3 = (batch_for_hw == 1 && config->in_channels == 3 &&
     config->in_height == 11 && config->in_width == 28 &&
     config->out_channels == 3 && config->weight_in_channels == 1 &&
     config->kernel_h == 3 && config->kernel_w == 3 && groups == 3);
@@ -4787,7 +4932,7 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     }
   }
 
-  set_conv2d_params(config->batch, config->in_channels, config->in_height, config->in_width,
+  set_conv2d_params(batch_for_hw, config->in_channels, config->in_height, config->in_width,
     config->out_channels, config->kernel_h, config->kernel_w, config->groups,
     out_height, out_width, width_stride, out_width_stride, align_c, align_out_c);
 
@@ -4857,7 +5002,8 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   pack_nc1hwc2_fp16(input_packed, input,
       config->batch, config->in_channels, config->in_height, config->in_width, input_pack_c2, width_stride);
 
-  size_t expected_elems = (size_t)config->out_channels * out_height * out_width;
+  size_t expected_elems = (size_t)config->batch * (size_t)config->out_channels *
+      (size_t)out_height * (size_t)out_width;
   float *expected = (float*)malloc(expected_elems * sizeof(float));
   if (!expected) {
     printf("failed to allocate expected buffer for %s\n", config->name);
@@ -4872,24 +5018,29 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
   const bool use_oc_remap = (config->out_channels == 6 && config->weight_in_channels == 3 &&
       config->kernel_h == 2 && config->kernel_w == 3);
   const int oc_map[6] = {0, 1, 2, 4, 5, 3};
-  for (int oc = 0; oc < config->out_channels; oc++) {
-    int oc_group = oc / out_per_group;
-    for (int oh = 0; oh < out_height; oh++) {
-      for (int ow = 0; ow < out_width; ow++) {
-        float acc = 0.0f;
-        for (int ic = 0; ic < config->weight_in_channels; ic++) {
-          int ic_global = oc_group * in_per_group + ic;
-          for (int kh = 0; kh < config->kernel_h; kh++) {
-            int ih = oh + kh;
-            for (int kw = 0; kw < config->kernel_w; kw++) {
-              int iw = ow + kw;
-              size_t in_idx = (((size_t)ic_global * config->in_height) + ih) * config->in_width + iw;
-              size_t wt_idx = ((((size_t)oc * config->weight_in_channels) + ic) * config->kernel_h + kh) * config->kernel_w + kw;
-              acc += (float)kernel[wt_idx] * (float)input[in_idx];
+  for (int n = 0; n < config->batch; n++) {
+    for (int oc = 0; oc < config->out_channels; oc++) {
+      int oc_group = oc / out_per_group;
+      for (int oh = 0; oh < out_height; oh++) {
+        for (int ow = 0; ow < out_width; ow++) {
+          float acc = 0.0f;
+          for (int ic = 0; ic < config->weight_in_channels; ic++) {
+            int ic_global = oc_group * in_per_group + ic;
+            for (int kh = 0; kh < config->kernel_h; kh++) {
+              int ih = oh + kh;
+              for (int kw = 0; kw < config->kernel_w; kw++) {
+                int iw = ow + kw;
+                size_t in_idx = ((((size_t)n * config->in_channels + ic_global) *
+                    config->in_height) + ih) * config->in_width + iw;
+                size_t wt_idx = ((((size_t)oc * config->weight_in_channels) + ic) *
+                    config->kernel_h + kh) * config->kernel_w + kw;
+                acc += (float)kernel[wt_idx] * (float)input[in_idx];
+              }
             }
           }
+          size_t out_idx = ((((size_t)n * config->out_channels + oc) * out_height) + oh) * out_width + ow;
+          expected[out_idx] = acc;
         }
-        expected[(size_t)oc * out_height * out_width + oh * out_width + ow] = acc;
       }
     }
   }
@@ -4898,7 +5049,7 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
       config->batch, config->out_channels, out_height, out_width);
 
   // Expand grouped kernel to full channel layout so float16_conv2d can pack it.
-  const bool use_depthwise_32x32_1x1 = (config->batch == 1 &&
+  const bool use_depthwise_32x32_1x1 = (batch_for_hw == 1 &&
     config->in_channels == 32 && config->in_height == 32 && config->in_width == 32 &&
     config->out_channels == 32 && config->weight_in_channels == 1 &&
     config->kernel_h == 1 && config->kernel_w == 1 && groups == 32);
@@ -4972,7 +5123,7 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     free(reordered);
   }
 
-  float *output_nchw = (float*)malloc((size_t)config->out_channels * out_height * out_width * sizeof(float));
+  float *output_nchw = (float*)malloc(expected_elems * sizeof(float));
   if (!output_nchw) {
     printf("failed to allocate output buffer for %s\n", config->name);
     free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected);
@@ -4984,135 +5135,33 @@ static int run_conv2d_case(const Conv2dTestConfig *config) {
     // RKNN reports native output C2=8 for 1x16x16x16.
     unpack_c2 = 8;
   }
-  bool use_tile = false;
-  int tile_max_h = 0;
-  if (config->kernel_h == 1 && config->kernel_w == 1) {
-    tile_max_h = 11264 / width_stride;
-    // if (tile_max_h > 55) tile_max_h = 55;
-    if (tile_max_h < 1) tile_max_h = 1;
-    use_tile = (out_height > tile_max_h);
-  }
-  if (use_tile) {
-    for (int row_offset = 0; row_offset < out_height; row_offset += tile_max_h) {
-      int tile_h = out_height - row_offset;
-      if (tile_h > tile_max_h) tile_h = tile_max_h;
-      size_t tile_input_elems = (size_t)config->batch * config->in_channels * (size_t)tile_h * config->in_width;
-      __fp16 *tile_input = (__fp16*)malloc(tile_input_elems * sizeof(__fp16));
-      if (!tile_input) {
-        printf("failed to allocate tile input for %s\n", config->name);
+  bool split_batch = (config->batch > 1);
+  if (split_batch) {
+    Conv2dTestConfig exec_config = *config;
+    exec_config.batch = 1;
+    size_t per_batch_input_elems = (size_t)config->in_channels *
+        (size_t)config->in_height * (size_t)config->in_width;
+    size_t per_batch_output_elems = (size_t)config->out_channels *
+        (size_t)out_height * (size_t)out_width;
+    for (int n = 0; n < config->batch; n++) {
+      const __fp16 *batch_input = input + (size_t)n * per_batch_input_elems;
+      float *batch_output = output_nchw + (size_t)n * per_batch_output_elems;
+      const float *batch_expected = expected + (size_t)n * per_batch_output_elems;
+      if (run_conv2d_exec(&exec_config, batch_input, npu_kernel, per_batch_input_elems,
+            expanded_weight_elems, out_height, out_width, width_stride, out_width_stride,
+            align_c, align_out_c, unpack_c2, is_161818_161633, is_11555_35333_g5,
+            batch_expected, batch_output) != 0) {
         free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected); free(output_nchw);
         return -1;
       }
-      for (int n = 0; n < config->batch; n++) {
-        for (int c = 0; c < config->in_channels; c++) {
-          size_t src_base = (((size_t)n * config->in_channels + c) * config->in_height + row_offset) * config->in_width;
-          size_t dst_base = (((size_t)n * config->in_channels + c) * (size_t)tile_h) * config->in_width;
-          memcpy(tile_input + dst_base, input + src_base, (size_t)tile_h * config->in_width * sizeof(__fp16));
-        }
-      }
-      int tile_atoms = out_width * tile_h;
-      int tile_out_width_stride = (tile_atoms < 4) ? tile_atoms : ((tile_atoms + 3) & ~3);
-      set_conv2d_params(config->batch, config->in_channels, tile_h, config->in_width,
-        config->out_channels, config->kernel_h, config->kernel_w, config->groups,
-        tile_h, out_width, width_stride, tile_out_width_stride, align_c, align_out_c);
-      __fp16 *result = float16_conv2d(tile_input, npu_kernel, 13, (int)tile_input_elems, (int)expanded_weight_elems);
-      if (result == NULL) {
-        printf("float16_conv2d returned NULL for %s\n", config->name);
-        free(tile_input);
-        free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected); free(output_nchw);
-        return -1;
-      }
-      int flat_width = tile_h * out_width;
-      size_t flat_elems = (size_t)config->batch * (size_t)config->out_channels * (size_t)flat_width;
-      float *output_flat = (float*)malloc(flat_elems * sizeof(float));
-      if (!output_flat) {
-        printf("failed to allocate flat output buffer for %s\n", config->name);
-        free(result);
-        free(tile_input);
-        free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected); free(output_nchw);
-        return -1;
-      }
-      unpack_nc1hwc2_fp16(result, output_flat,
-          config->batch, config->out_channels, 1, flat_width, unpack_c2, tile_out_width_stride);
-      free(result);
-      for (int n = 0; n < config->batch; n++) {
-        for (int oc = 0; oc < config->out_channels; oc++) {
-          size_t src_base = ((size_t)n * config->out_channels + oc) * (size_t)flat_width;
-          size_t dst_base = ((size_t)n * config->out_channels + oc) * (size_t)out_height * (size_t)out_width;
-          dst_base += (size_t)row_offset * (size_t)out_width;
-          memcpy(output_nchw + dst_base, output_flat + src_base, (size_t)flat_width * sizeof(float));
-        }
-      }
-      free(output_flat);
-      free(tile_input);
     }
   } else {
-    __fp16 *result = float16_conv2d(input, npu_kernel, 13, (int)input_elems, (int)expanded_weight_elems);
-    if (result == NULL) {
-      printf("float16_conv2d returned NULL for %s\n", config->name);
+    if (run_conv2d_exec(config, input, npu_kernel, input_elems, expanded_weight_elems,
+          out_height, out_width, width_stride, out_width_stride, align_c, align_out_c,
+          unpack_c2, is_161818_161633, is_11555_35333_g5, expected, output_nchw) != 0) {
       free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected); free(output_nchw);
       return -1;
     }
-    if (config->kernel_h == 1 && config->kernel_w == 1) {
-      int flat_width = out_height * out_width;
-      size_t flat_elems = (size_t)config->batch * (size_t)config->out_channels * (size_t)flat_width;
-      float *output_flat = (float*)malloc(flat_elems * sizeof(float));
-      if (!output_flat) {
-        printf("failed to allocate flat output buffer for %s\n", config->name);
-        free(result);
-        free(input); free(kernel); free(npu_kernel); free(input_packed); free(expected); free(output_nchw);
-        return -1;
-      }
-      unpack_nc1hwc2_fp16(result, output_flat,
-          config->batch, config->out_channels, 1, flat_width, unpack_c2, out_width_stride);
-      for (int n = 0; n < config->batch; n++) {
-        for (int oc = 0; oc < config->out_channels; oc++) {
-          size_t src_base = ((size_t)n * config->out_channels + oc) * (size_t)flat_width;
-          size_t dst_base = ((size_t)n * config->out_channels + oc) * (size_t)out_height * (size_t)out_width;
-          memcpy(output_nchw + dst_base, output_flat + src_base, (size_t)flat_width * sizeof(float));
-        }
-      }
-      free(output_flat);
-    } else {
-      int unpack_width_stride = out_width;
-      size_t plane_stride = 0;
-      if (is_11555_35333_g5) {
-        // This case pads one extra output row between channel planes.
-        plane_stride = (size_t)out_height * (size_t)unpack_width_stride * (size_t)unpack_c2
-            + (size_t)out_width_stride * 2u;
-      }
-      if (plane_stride > 0) {
-        unpack_nc1hwc2_fp16_plane_stride(result, output_nchw,
-            config->batch, config->out_channels, out_height, out_width,
-            unpack_c2, unpack_width_stride, plane_stride);
-      } else {
-        unpack_nc1hwc2_fp16(result, output_nchw,
-            config->batch, config->out_channels, out_height, out_width,
-            unpack_c2, unpack_width_stride);
-      }
-      if (is_161818_161633 || is_11555_35333_g5) {
-        int stride_opts[] = {
-          out_width,
-          out_width_stride,
-          out_width_stride / 2,
-          out_width_stride / 4,
-          out_width_stride / 8,
-          out_width_stride / 16,
-        };
-        int c2_opts[] = {8, 16};
-        for (size_t ci = 0; ci < sizeof(c2_opts) / sizeof(c2_opts[0]); ci++) {
-          int c2 = c2_opts[ci];
-          for (size_t si = 0; si < sizeof(stride_opts) / sizeof(stride_opts[0]); si++) {
-            int stride = stride_opts[si];
-            if (stride <= 0) continue;
-            report_conv2d_unpack_variant(config->name, result, expected,
-                config->batch, config->out_channels, out_height, out_width,
-                c2, stride, 1e-3f, 1e-3f);
-          }
-        }
-      }
-    }
-    free(result);
   }
 
   print_conv2d_output("Actual output (ops_reg):", output_nchw,
