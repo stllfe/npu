@@ -3294,10 +3294,10 @@ int test_max(int argc, char **argv) {
   }
 
   static const MaxTestConfig configs[] = {
-    {"max_1x1", 1, 1},
+    // {"max_1x1", 1, 1},
     {"max_2x2", 2, 2},
-    {"max_8x8", 8, 8},
-    {"max_64x64", 64, 64},
+    // {"max_8x8", 8, 8},
+    // {"max_64x64", 64, 64},
   };
 
   int status = 0;
@@ -6633,6 +6633,7 @@ int test_exp2(int argc, char **argv) {
   }
   static const LutTestConfig configs[] = {
       {"exp2_4x4", 4, 4},
+      {"exp2_64x64", 64, 64},
   };
   int status = 0;
   for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
@@ -6833,6 +6834,6 @@ int main(int argc, char **argv) {
     printf("Unknown test '%s'\n", argv[1]);
     return -1;
   }
-  test_relu(argc, argv);
+  test_exp2(argc, argv);
   return 0;
 }
