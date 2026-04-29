@@ -378,6 +378,69 @@ emit(uint32_t reg, uint64_t value)
 
 #define EMIT(offset, value) emit(offset, value);
 
+static void emit_lut_q015_tables(const uint16_t *lut) {
+   EMIT(REG_DPU_LUT_ACCESS_CFG,
+        DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+        DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+        DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+   for (int i = 0; i <= 512; ++i) {
+      EMIT(REG_DPU_LUT_ACCESS_DATA,
+           DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(lut[i]));
+   }
+   EMIT(REG_DPU_LUT_ACCESS_CFG,
+        DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+        DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+        DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+   for (int i = 0; i <= 512; ++i) {
+      EMIT(REG_DPU_LUT_ACCESS_DATA,
+           DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(lut[513 + i]));
+   }
+}
+
+static void emit_lut_q015_biased(uint64_t output_dma, uint64_t input_dma, uint32_t bn_mul_operand) {
+   EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+   EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+   EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+   EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+   EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+   EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+   EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+   EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+   EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+   EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+   EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+   EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+   EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+   EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+   EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+   EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+   EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(bn_mul_operand));
+
+   EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+   EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+   EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+   EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+   emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+   EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+   EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+   EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+   EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+   EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+   EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+   EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+   EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+   EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+   EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+   EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+   EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+   emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+}
+
 // static inline uint64_t EMIT(uint32_t reg, uint32_t value){
 //    uint32_t target = rkt_get_target(reg) + 0x1;
  
@@ -1023,6 +1086,24 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          case 35: goto alu_case_asinh;
          case 36: goto alu_case_acosh;
          case 37: goto alu_case_atanh;
+         case 38: goto alu_case_sinh;
+         case 39: goto alu_case_cosh;
+         case 40: goto alu_case_celu;
+         case 41: goto alu_case_selu;
+         case 42: goto alu_case_swish;
+         case 43: goto alu_case_softsign;
+         case 44: goto alu_case_logsigmoid;
+         case 45: goto alu_case_hardsigmoid;
+         case 46: goto alu_case_softplus;
+         case 47: goto alu_case_gelu;
+         case 48: goto alu_case_quick_gelu;
+         case 49: goto alu_case_elu;
+         case 50: goto alu_case_relu6;
+         case 51: goto alu_case_hardswish;
+         case 52: goto alu_case_mish;
+         case 53: goto alu_case_hardtanh;
+         case 54: goto alu_case_exp;
+         case 55: goto alu_case_exp2;
          default: goto alu_case_default;
       }
 
@@ -2413,6 +2494,763 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
          EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
          emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
+      }
+      alu_case_sinh: { // sinh
+         // Generate the sinh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t sinh_lut[1026];
+         static int sinh_lut_init = 0;
+         if (!sinh_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double inv_sinh_max = 1.0 / sinh(max_x);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = -sinh(x) * inv_sinh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sinh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = sinh(x) * inv_sinh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               sinh_lut[513 + i] = (uint16_t)q;
+            }
+            sinh_lut_init = 1;
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sinh_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(sinh_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
+      }
+      alu_case_cosh: { // cosh
+         // Generate the cosh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t cosh_lut[1026];
+         static int cosh_lut_init = 0;
+         if (!cosh_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double inv_cosh_max = 1.0 / cosh(max_x);
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double y = cosh(x) * inv_cosh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               cosh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = cosh(x) * inv_cosh_max;
+               long q = lround((y + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               cosh_lut[513 + i] = (uint16_t)q;
+            }
+            cosh_lut_init = 1;
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(0) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(cosh_lut[i]));
+         }
+         EMIT(REG_DPU_LUT_ACCESS_CFG,
+              DPU_LUT_ACCESS_CFG_LUT_ACCESS_TYPE(1) |
+              DPU_LUT_ACCESS_CFG_LUT_TABLE_ID(1) |
+              DPU_LUT_ACCESS_CFG_LUT_ADDR(0));
+         for (int i = 0; i <= 512; ++i) {
+            EMIT(REG_DPU_LUT_ACCESS_DATA,
+                 DPU_LUT_ACCESS_DATA_LUT_ACCESS_DATA(cosh_lut[513 + i]));
+         }
+
+         EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_DPU_RDMA_RDMA_S_POINTER, DPU_RDMA_RDMA_S_POINTER_EXECUTER_PP_CLEAR(1) | DPU_RDMA_RDMA_S_POINTER_POINTER_PP_CLEAR(1));
+         EMIT(REG_PC_BASE_ADDRESS, PC_BASE_ADDRESS_PC_SOURCE_ADDR(0));
+         EMIT(REG_PC_REGISTER_AMOUNTS, PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT(0));
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(5) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
+         EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
+         EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(16));
+         EMIT(REG_DPU_DATA_CUBE_WIDTH, DPU_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_DATA_CUBE_CHANNEL, DPU_DATA_CUBE_CHANNEL_ORIG_CHANNEL(7) | DPU_DATA_CUBE_CHANNEL_CHANNEL(7));
+
+         EMIT(REG_DPU_BS_CFG, DPU_BS_CFG_BS_RELU_BYPASS(1) | DPU_BS_CFG_BS_MUL_BYPASS(1) | DPU_BS_CFG_BS_ALU_BYPASS(1) | DPU_BS_CFG_BS_BYPASS(1));
+         EMIT(REG_DPU_BS_OW_CFG, DPU_BS_OW_CFG_SIZE_E_2(1) | DPU_BS_OW_CFG_SIZE_E_1(1) | DPU_BS_OW_CFG_SIZE_E_0(1) | DPU_BS_OW_CFG_OD_BYPASS(1));
+         EMIT(REG_DPU_WDMA_SIZE_0, DPU_WDMA_SIZE_0_CHANNEL_WDMA(7));
+         EMIT(REG_DPU_WDMA_SIZE_1, DPU_WDMA_SIZE_1_WIDTH_WDMA(15));
+
+         EMIT(REG_DPU_BN_CFG, DPU_BN_CFG_BN_ALU_ALGO(2) | DPU_BN_CFG_BN_RELU_BYPASS(1));
+         EMIT(REG_DPU_BN_ALU_CFG, 0x80000000);
+         EMIT(REG_DPU_BN_MUL_CFG, DPU_BN_MUL_CFG_BN_MUL_OPERAND(0x6d18));
+
+         EMIT(REG_DPU_EW_CFG, DPU_EW_CFG_EW_RELU_BYPASS(1) | DPU_EW_CFG_EW_OP_CVT_BYPASS(1));
+         EMIT(REG_DPU_EW_CVT_SCALE_VALUE, DPU_EW_CVT_SCALE_VALUE_EW_OP_CVT_SCALE(1));
+
+         EMIT(REG_DPU_OUT_CVT_SCALE, DPU_OUT_CVT_SCALE_FP32TOFP16_EN(1) | DPU_OUT_CVT_SCALE_OUT_CVT_SCALE(1));
+
+         EMIT(REG_DPU_SURFACE_ADD, DPU_SURFACE_ADD_SURF_ADD(32));
+         emit_raw(&regs, 0x1000 | 0x1, 0x40c4, 0);
+
+         EMIT(REG_DPU_LUT_CFG, DPU_LUT_CFG_LUT_HYBRID_PRIORITY(1) | DPU_LUT_CFG_LUT_OFLOW_PRIORITY(1) | DPU_LUT_CFG_LUT_LO_LE_MUX(2));
+         EMIT(REG_DPU_LUT_INFO, DPU_LUT_INFO_LUT_LO_INDEX_SELECT(5) | DPU_LUT_INFO_LUT_LE_INDEX_SELECT(5));
+         EMIT(REG_DPU_LUT_LE_START, 0xffffc000);
+         EMIT(REG_DPU_LUT_LO_END, 0x00004000);
+         EMIT(REG_DPU_LUT_LE_SLOPE_SCALE, DPU_LUT_LE_SLOPE_SCALE_LUT_LE_SLOPE_UFLOW_SCALE(23107));
+         EMIT(REG_DPU_LUT_LE_SLOPE_SHIFT, DPU_LUT_LE_SLOPE_SHIFT_LUT_LE_SLOPE_UFLOW_SHIFT(22));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_WIDTH, DPU_RDMA_RDMA_DATA_CUBE_WIDTH_WIDTH(15));
+         EMIT(REG_DPU_RDMA_RDMA_DATA_CUBE_CHANNEL, DPU_RDMA_RDMA_DATA_CUBE_CHANNEL_CHANNEL(7));
+         EMIT(REG_DPU_RDMA_RDMA_SRC_BASE_ADDR, DPU_RDMA_RDMA_SRC_BASE_ADDR_SRC_BASE_ADDR(input_dma));
+         EMIT(REG_DPU_RDMA_RDMA_ERDMA_CFG, DPU_RDMA_RDMA_ERDMA_CFG_ERDMA_DISABLE(1));
+         EMIT(REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG, DPU_RDMA_RDMA_FEATURE_MODE_CFG_IN_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_PROC_PRECISION(2) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_MRDMA_FP16TOFP32_EN(1) | DPU_RDMA_RDMA_FEATURE_MODE_CFG_FLYING_MODE(1));
+         EMIT(REG_DPU_RDMA_RDMA_WEIGHT, DPU_RDMA_RDMA_WEIGHT_E_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_N_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_B_WEIGHT(1) | DPU_RDMA_RDMA_WEIGHT_M_WEIGHT(1));
+         emit_raw(&regs, 0x81, REG_PC_OPERATION_ENABLE, PC_OPERATION_ENABLE_RESERVED_0(12) | PC_OPERATION_ENABLE_OP_EN(0));
+         goto alu_case_done;
+      }
+      alu_case_celu: { // celu
+         // Generate the celu LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t celu_lut[1026];
+         static int celu_lut_init = 0;
+         if (!celu_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double alpha = 1.0;
+            const double max_pos = max_x;
+            const double max_neg = alpha * (exp(-max_x / alpha) - 1.0);
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = (xn > 0.0) ? xn : (alpha * (exp(xn / alpha) - 1.0));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               celu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = (x > 0.0) ? x : (alpha * (exp(x / alpha) - 1.0));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               celu_lut[513 + i] = (uint16_t)q;
+            }
+            celu_lut_init = 1;
+         }
+         emit_lut_q015_tables(celu_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_selu: { // selu
+         // Generate the selu LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t selu_lut[1026];
+         static int selu_lut_init = 0;
+         if (!selu_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double alpha = 1.6732632423543772;
+            const double scale = 1.0507009873554805;
+            const double max_pos = scale * max_x;
+            const double max_neg = scale * (alpha * (exp(-max_x) - 1.0));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = (xn > 0.0) ? (scale * xn) : (scale * (alpha * (exp(xn) - 1.0)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               selu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = (x > 0.0) ? (scale * x) : (scale * (alpha * (exp(x) - 1.0)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               selu_lut[513 + i] = (uint16_t)q;
+            }
+            selu_lut_init = 1;
+         }
+         emit_lut_q015_tables(selu_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_swish: { // swish
+         // Generate the swish LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t swish_lut[1026];
+         static int swish_lut_init = 0;
+         if (!swish_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = max_x / (1.0 + exp(-max_x));
+            const double max_neg = -max_x / (1.0 + exp(max_x));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / (1.0 + exp(-xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               swish_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / (1.0 + exp(-x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               swish_lut[513 + i] = (uint16_t)q;
+            }
+            swish_lut_init = 1;
+         }
+         emit_lut_q015_tables(swish_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_softsign: { // softsign
+         // Generate the softsign LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t softsign_lut[1026];
+         static int softsign_lut_init = 0;
+         if (!softsign_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = max_x / (1.0 + max_x);
+            const double max_neg = -max_x / (1.0 + max_x);
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / (1.0 + fabs(xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softsign_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / (1.0 + fabs(x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softsign_lut[513 + i] = (uint16_t)q;
+            }
+            softsign_lut_init = 1;
+         }
+         emit_lut_q015_tables(softsign_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_logsigmoid: { // logsigmoid
+         // Generate the logsigmoid LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t logsigmoid_lut[1026];
+         static int logsigmoid_lut_init = 0;
+         if (!logsigmoid_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = -log1p(exp(-max_x));
+            const double max_neg = -log1p(exp(max_x));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = -log1p(exp(-xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               logsigmoid_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = -log1p(exp(-x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               logsigmoid_lut[513 + i] = (uint16_t)q;
+            }
+            logsigmoid_lut_init = 1;
+         }
+         emit_lut_q015_tables(logsigmoid_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_hardsigmoid: { // hardsigmoid
+         // Generate the hardsigmoid LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t hardsigmoid_lut[1026];
+         static int hardsigmoid_lut_init = 0;
+         if (!hardsigmoid_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = fmin(1.0, fmax(0.0, max_x / 6.0 + 0.5));
+            const double max_neg = fmin(1.0, fmax(0.0, -max_x / 6.0 + 0.5));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / 6.0 + 0.5;
+               if (y < 0.0) y = 0.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardsigmoid_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / 6.0 + 0.5;
+               if (y < 0.0) y = 0.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardsigmoid_lut[513 + i] = (uint16_t)q;
+            }
+            hardsigmoid_lut_init = 1;
+         }
+         emit_lut_q015_tables(hardsigmoid_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_softplus: { // softplus
+         // Generate the softplus LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t softplus_lut[1026];
+         static int softplus_lut_init = 0;
+         if (!softplus_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = log1p(exp(max_x));
+            const double max_neg = log1p(exp(-max_x));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = log1p(exp(xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softplus_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = log1p(exp(x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               softplus_lut[513 + i] = (uint16_t)q;
+            }
+            softplus_lut_init = 1;
+         }
+         emit_lut_q015_tables(softplus_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_gelu: { // gelu
+         // Generate the gelu LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t gelu_lut[1026];
+         static int gelu_lut_init = 0;
+         if (!gelu_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double inv_sqrt2 = 0.7071067811865475;
+            const double max_pos = 0.5 * max_x * (1.0 + erf(max_x * inv_sqrt2));
+            const double max_neg = 0.5 * (-max_x) * (1.0 + erf(-max_x * inv_sqrt2));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = 0.5 * xn * (1.0 + erf(xn * inv_sqrt2));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               gelu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = 0.5 * x * (1.0 + erf(x * inv_sqrt2));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               gelu_lut[513 + i] = (uint16_t)q;
+            }
+            gelu_lut_init = 1;
+         }
+         emit_lut_q015_tables(gelu_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_quick_gelu: { // quick_gelu
+         // Generate the quick_gelu LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t quick_gelu_lut[1026];
+         static int quick_gelu_lut_init = 0;
+         if (!quick_gelu_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double k = 1.702;
+            const double max_pos = max_x / (1.0 + exp(-k * max_x));
+            const double max_neg = -max_x / (1.0 + exp(k * max_x));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn / (1.0 + exp(-k * xn));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               quick_gelu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x / (1.0 + exp(-k * x));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               quick_gelu_lut[513 + i] = (uint16_t)q;
+            }
+            quick_gelu_lut_init = 1;
+         }
+         emit_lut_q015_tables(quick_gelu_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_elu: { // elu
+         // Generate the elu LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t elu_lut[1026];
+         static int elu_lut_init = 0;
+         if (!elu_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = max_x;
+            const double max_neg = exp(-max_x) - 1.0;
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = (xn > 0.0) ? xn : (exp(xn) - 1.0);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               elu_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = (x > 0.0) ? x : (exp(x) - 1.0);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               elu_lut[513 + i] = (uint16_t)q;
+            }
+            elu_lut_init = 1;
+         }
+         emit_lut_q015_tables(elu_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_relu6: { // relu6
+         // Generate the relu6 LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t relu6_lut[1026];
+         static int relu6_lut_init = 0;
+         if (!relu6_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = fmin(6.0, fmax(0.0, max_x));
+            const double max_neg = fmin(6.0, fmax(0.0, -max_x));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn;
+               if (y < 0.0) y = 0.0;
+               if (y > 6.0) y = 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               relu6_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x;
+               if (y < 0.0) y = 0.0;
+               if (y > 6.0) y = 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               relu6_lut[513 + i] = (uint16_t)q;
+            }
+            relu6_lut_init = 1;
+         }
+         emit_lut_q015_tables(relu6_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_hardswish: { // hardswish
+         // Generate the hardswish LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t hardswish_lut[1026];
+         static int hardswish_lut_init = 0;
+         if (!hardswish_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = max_x * fmin(fmax(max_x + 3.0, 0.0), 6.0) / 6.0;
+            const double max_neg = -max_x * fmin(fmax(-max_x + 3.0, 0.0), 6.0) / 6.0;
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double tmp = xn + 3.0;
+               if (tmp < 0.0) tmp = 0.0;
+               if (tmp > 6.0) tmp = 6.0;
+               double y = xn * tmp / 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardswish_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double tmp = x + 3.0;
+               if (tmp < 0.0) tmp = 0.0;
+               if (tmp > 6.0) tmp = 6.0;
+               double y = x * tmp / 6.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardswish_lut[513 + i] = (uint16_t)q;
+            }
+            hardswish_lut_init = 1;
+         }
+         emit_lut_q015_tables(hardswish_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_mish: { // mish
+         // Generate the mish LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t mish_lut[1026];
+         static int mish_lut_init = 0;
+         if (!mish_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = max_x * tanh(log1p(exp(max_x)));
+            const double max_neg = -max_x * tanh(log1p(exp(-max_x)));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn * tanh(log1p(exp(xn)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               mish_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x * tanh(log1p(exp(x)));
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               mish_lut[513 + i] = (uint16_t)q;
+            }
+            mish_lut_init = 1;
+         }
+         emit_lut_q015_tables(mish_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_hardtanh: { // hardtanh
+         // Generate the hardtanh LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t hardtanh_lut[1026];
+         static int hardtanh_lut_init = 0;
+         if (!hardtanh_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = fmin(1.0, fmax(-1.0, max_x));
+            const double max_neg = fmin(1.0, fmax(-1.0, -max_x));
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = xn;
+               if (y < -1.0) y = -1.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardtanh_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = x;
+               if (y < -1.0) y = -1.0;
+               if (y > 1.0) y = 1.0;
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               hardtanh_lut[513 + i] = (uint16_t)q;
+            }
+            hardtanh_lut_init = 1;
+         }
+         emit_lut_q015_tables(hardtanh_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_exp: { // exp
+         // Generate the exp LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t exp_lut[1026];
+         static int exp_lut_init = 0;
+         if (!exp_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = exp(max_x);
+            const double max_neg = exp(-max_x);
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = exp(xn);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = exp(x);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp_lut[513 + i] = (uint16_t)q;
+            }
+            exp_lut_init = 1;
+         }
+         emit_lut_q015_tables(exp_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
+         goto alu_case_done;
+      }
+      alu_case_exp2: { // exp2
+         // Generate the exp2 LUT once using the NVDLA indexing grid (unsigned Q0.15 with +1 bias).
+         static uint16_t exp2_lut[1026];
+         static int exp2_lut_init = 0;
+         if (!exp2_lut_init) {
+            const double index_scale = 5216.0;
+            const double step = 32.0 / index_scale;
+            const double max_x = 512.0 * step;
+            const double max_pos = exp2(max_x);
+            const double max_neg = exp2(-max_x);
+            double max_abs = fmax(fabs(max_pos), fabs(max_neg));
+            double inv_scale = max_abs > 1.0 ? 1.0 / max_abs : 1.0;
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)(512 - i) * step;
+               double xn = -x;
+               double y = exp2(xn);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp2_lut[i] = (uint16_t)q;
+            }
+            for (int i = 0; i <= 512; ++i) {
+               double x = (double)i * step;
+               double y = exp2(x);
+               long q = lround((y * inv_scale + 1.0) * 16384.0);
+               if (q < 0) q = 0;
+               if (q > 32767) q = 32767;
+               exp2_lut[513 + i] = (uint16_t)q;
+            }
+            exp2_lut_init = 1;
+         }
+         emit_lut_q015_tables(exp2_lut);
+         emit_lut_q015_biased(output_dma, input_dma, 0x6d18);
          goto alu_case_done;
       }
       alu_case_silu: { // silu

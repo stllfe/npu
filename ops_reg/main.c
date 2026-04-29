@@ -3506,7 +3506,27 @@ typedef struct {
   const char *name;
   int rows;
   int cols;
+} SinhTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} CoshTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
 } AtanhTestConfig;
+
+typedef struct {
+  const char *name;
+  int rows;
+  int cols;
+} LutTestConfig;
+
+typedef float (*LutRefFn)(float);
 
 static void load_fixed_silu_inputs(__fp16 *dst, size_t total_elements) {
   static const uint16_t feature_bits[] = {
@@ -3608,6 +3628,188 @@ static __fp16 *float16_alu_op_padded(const __fp16 *weights, const __fp16 *featur
   memcpy(output_copy, output_data, output_bytes);
   release_matmul_handles(fd, &handles);
   return output_copy;
+}
+
+static float lut_ref_inv_scale(LutRefFn fn, float max_x) {
+  float pos = fn(max_x);
+  float neg = fn(-max_x);
+  float max_abs = fmaxf(fabsf(pos), fabsf(neg));
+  if (max_abs > 1.0f) return 1.0f / max_abs;
+  return 1.0f;
+}
+
+static int run_lut_case(const LutTestConfig *config, uint32_t alu_algorithm,
+    const char *label, LutRefFn fn) {
+  if (!config || !fn) return -1;
+  const char *name = config->name ? config->name : "lut_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  const float index_scale = 5216.0f;
+  const float step = 32.0f / index_scale;
+  const float max_x = 512.0f * step;
+  const float inv_scale = lut_ref_inv_scale(fn, max_x);
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = fn(x) * inv_scale;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, alu_algorithm);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  printf("Result (%s)\n", label);
+  print_float_matrix("Output", result, rows, cols);
+
+  const float kLutAtol = 1e-2f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kLutAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static float ref_celu(float x) {
+  if (x > 0.0f) return x;
+  return expf(x) - 1.0f;
+}
+
+static float ref_selu(float x) {
+  const float alpha = 1.673263242f;
+  const float scale = 1.050700987f;
+  if (x > 0.0f) return scale * x;
+  return scale * (alpha * (expf(x) - 1.0f));
+}
+
+static float ref_swish(float x) {
+  return x / (1.0f + expf(-x));
+}
+
+static float ref_softsign(float x) {
+  return x / (1.0f + fabsf(x));
+}
+
+static float ref_logsigmoid(float x) {
+  return -log1pf(expf(-x));
+}
+
+static float ref_hardsigmoid(float x) {
+  float y = x / 6.0f + 0.5f;
+  if (y < 0.0f) y = 0.0f;
+  if (y > 1.0f) y = 1.0f;
+  return y;
+}
+
+static float ref_softplus(float x) {
+  return log1pf(expf(x));
+}
+
+static float ref_gelu(float x) {
+  return 0.5f * x * (1.0f + erff(x * 0.707106781f));
+}
+
+static float ref_quick_gelu(float x) {
+  return x / (1.0f + expf(-1.702f * x));
+}
+
+static float ref_elu(float x) {
+  if (x > 0.0f) return x;
+  return expf(x) - 1.0f;
+}
+
+static float ref_relu6(float x) {
+  if (x < 0.0f) return 0.0f;
+  if (x > 6.0f) return 6.0f;
+  return x;
+}
+
+static float ref_hardswish(float x) {
+  float t = x + 3.0f;
+  if (t < 0.0f) t = 0.0f;
+  if (t > 6.0f) t = 6.0f;
+  return x * t / 6.0f;
+}
+
+static float ref_mish(float x) {
+  return x * tanhf(log1pf(expf(x)));
+}
+
+static float ref_hardtanh(float x) {
+  if (x < -1.0f) return -1.0f;
+  if (x > 1.0f) return 1.0f;
+  return x;
+}
+
+static float ref_exp(float x) {
+  return expf(x);
+}
+
+static float ref_exp2(float x) {
+  return exp2f(x);
 }
 
 static int run_silu_case(const SiluTestConfig *config) {
@@ -4142,6 +4344,70 @@ static int run_cos_case(const CosTestConfig *config) {
   return matches ? 0 : -1;
 }
 
+static int run_celu_case(const LutTestConfig *config) {
+  return run_lut_case(config, 40, "CELU", ref_celu);
+}
+
+static int run_selu_case(const LutTestConfig *config) {
+  return run_lut_case(config, 41, "SELU", ref_selu);
+}
+
+static int run_swish_case(const LutTestConfig *config) {
+  return run_lut_case(config, 42, "SWISH", ref_swish);
+}
+
+static int run_softsign_case(const LutTestConfig *config) {
+  return run_lut_case(config, 43, "SOFTSIGN", ref_softsign);
+}
+
+static int run_logsigmoid_case(const LutTestConfig *config) {
+  return run_lut_case(config, 44, "LOGSIGMOID", ref_logsigmoid);
+}
+
+static int run_hardsigmoid_case(const LutTestConfig *config) {
+  return run_lut_case(config, 45, "HARDSIGMOID", ref_hardsigmoid);
+}
+
+static int run_softplus_case(const LutTestConfig *config) {
+  return run_lut_case(config, 46, "SOFTPLUS", ref_softplus);
+}
+
+static int run_gelu_case(const LutTestConfig *config) {
+  return run_lut_case(config, 47, "GELU", ref_gelu);
+}
+
+static int run_quick_gelu_case(const LutTestConfig *config) {
+  return run_lut_case(config, 48, "QUICK_GELU", ref_quick_gelu);
+}
+
+static int run_elu_case(const LutTestConfig *config) {
+  return run_lut_case(config, 49, "ELU", ref_elu);
+}
+
+static int run_relu6_case(const LutTestConfig *config) {
+  return run_lut_case(config, 50, "RELU6", ref_relu6);
+}
+
+static int run_hardswish_case(const LutTestConfig *config) {
+  return run_lut_case(config, 51, "HARDSWISH", ref_hardswish);
+}
+
+static int run_mish_case(const LutTestConfig *config) {
+  return run_lut_case(config, 52, "MISH", ref_mish);
+}
+
+static int run_hardtanh_case(const LutTestConfig *config) {
+  return run_lut_case(config, 53, "HARDTANH", ref_hardtanh);
+}
+
+static int run_exp_case(const LutTestConfig *config) {
+  return run_lut_case(config, 54, "EXP", ref_exp);
+}
+
+static int run_exp2_case(const LutTestConfig *config) {
+  return run_lut_case(config, 55, "EXP2", ref_exp2);
+}
+
 static int run_asin_case(const AsinTestConfig *config) {
   if (!config) return -1;
   const char *name = config->name ? config->name : "asin_case";
@@ -4579,6 +4845,192 @@ static int run_acosh_case(const AcoshTestConfig *config) {
     float diff = fabsf(actual - expected[i]);
     if (diff > max_abs_diff) max_abs_diff = diff;
     if (diff > kAcoshAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_sinh_case(const SinhTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "sinh_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  const float index_scale = 5216.0f;
+  const float step = 32.0f / index_scale;
+  const float max_x = 512.0f * step;
+  const float inv_sinh_max = 1.0f / sinhf(max_x);
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = sinhf(x) * inv_sinh_max;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 38);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (SINH)", result, rows, cols);
+
+  const float kSinhAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kSinhAtol) matches = 0;
+  }
+
+  printf("%s: matches CPU -> %s (max diff=%.6f)\n",
+         name, matches ? "YES" : "NO", max_abs_diff);
+
+  breakpoint();
+  free(features);
+  free(weights);
+  free(expected);
+  free(result);
+  return matches ? 0 : -1;
+}
+
+static int run_cosh_case(const CoshTestConfig *config) {
+  if (!config) return -1;
+  const char *name = config->name ? config->name : "cosh_case";
+  int rows = config->rows > 0 ? config->rows : 1;
+  int cols = config->cols > 0 ? config->cols : 1;
+  size_t total_elements = (size_t)rows * cols;
+  if (total_elements == 0 || total_elements > INT_MAX) {
+    printf("%s: invalid shape %dx%d\n", name, rows, cols);
+    return -1;
+  }
+  int size = (int)total_elements;
+
+  __fp16 *features = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  __fp16 *weights = (__fp16 *)malloc(total_elements * sizeof(__fp16));
+  if (!features || !weights) {
+    printf("%s: failed to allocate %zu elements\n", name, total_elements);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  float *expected = (float *)malloc(total_elements * sizeof(float));
+  if (!expected) {
+    printf("%s: failed to allocate expected buffer\n", name);
+    free(features);
+    free(weights);
+    return -1;
+  }
+  printf("%s: allocated %zu elements\n", name, total_elements);
+
+  load_fixed_silu_inputs(features, total_elements);
+  const float index_scale = 5216.0f;
+  const float step = 32.0f / index_scale;
+  const float max_x = 512.0f * step;
+  const float inv_cosh_max = 1.0f / coshf(max_x);
+  for (size_t i = 0; i < total_elements; i++) {
+    float x = (float)features[i];
+    weights[i] = (__fp16)0;
+    expected[i] = coshf(x) * inv_cosh_max;
+  }
+
+  printf("Running %s (%dx%d)\n", name, rows, cols);
+  print_fp16_grid("Input (features)", features, rows, cols);
+  print_float_matrix("Expected (CPU)", expected, rows, cols);
+
+  __fp16 *result_padded = float16_alu_op_padded(weights, features, size, 39);
+  if (result_padded == NULL) {
+    printf("%s: float16_alu_op failed\n", name);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+
+  float *result = (float *)malloc(total_elements * sizeof(float));
+  if (!result) {
+    printf("%s: failed to allocate unpack buffer\n", name);
+    free(result_padded);
+    free(features);
+    free(weights);
+    free(expected);
+    return -1;
+  }
+  const size_t stride_fp32 = 0x10 / sizeof(float);
+  const float *result_padded_fp32 = (const float *)result_padded;
+  for (size_t i = 0; i < total_elements; i++) {
+    float raw = result_padded_fp32[i * stride_fp32];
+    result[i] = (raw - 16384.0f) / 16384.0f;
+  }
+  free(result_padded);
+
+  print_float_matrix("Result (COSH)", result, rows, cols);
+
+  const float kCoshAtol = 5e-3f;
+  float max_abs_diff = 0.0f;
+  int matches = 1;
+  for (size_t i = 0; i < total_elements; i++) {
+    float actual = result[i];
+    float diff = fabsf(actual - expected[i]);
+    if (diff > max_abs_diff) max_abs_diff = diff;
+    if (diff > kCoshAtol) matches = 0;
   }
 
   printf("%s: matches CPU -> %s (max diff=%.6f)\n",
@@ -6319,6 +6771,246 @@ int test_cos(int argc, char **argv) {
   return status;
 }
 
+int test_celu(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_celu_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_celu_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"celu_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_celu_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_selu(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_selu_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_selu_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"selu_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_selu_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_swish(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_swish_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_swish_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"swish_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_swish_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_softsign(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_softsign_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_softsign_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"softsign_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_softsign_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_logsigmoid(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_logsigmoid_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_logsigmoid_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"logsigmoid_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_logsigmoid_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_hardsigmoid(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_hardsigmoid_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_hardsigmoid_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"hardsigmoid_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_hardsigmoid_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_softplus(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_softplus_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_softplus_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"softplus_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_softplus_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_gelu(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_gelu_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_gelu_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"gelu_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_gelu_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_quick_gelu(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_quick_gelu_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_quick_gelu_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"quick_gelu_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_quick_gelu_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_elu(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_elu_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_elu_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"elu_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_elu_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_relu6(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_relu6_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_relu6_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"relu6_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_relu6_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_hardswish(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_hardswish_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_hardswish_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"hardswish_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_hardswish_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_mish(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_mish_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_mish_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"mish_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_mish_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_hardtanh(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_hardtanh_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_hardtanh_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"hardtanh_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_hardtanh_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_exp(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_exp_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_exp_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"exp_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_exp_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_exp2(int argc, char **argv) {
+  if (argc >= 3) {
+    LutTestConfig cli_config = {"test_exp2_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_exp2_case(&cli_config);
+  }
+  static const LutTestConfig configs[] = {
+      {"exp2_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_exp2_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
 int test_asin(int argc, char **argv) {
   if (argc >= 3) {
     AsinTestConfig cli_config = {"test_asin_cli", atoi(argv[1]), atoi(argv[2])};
@@ -6394,6 +7086,36 @@ int test_acosh(int argc, char **argv) {
   return status;
 }
 
+int test_sinh(int argc, char **argv) {
+  if (argc >= 3) {
+    SinhTestConfig cli_config = {"test_sinh_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_sinh_case(&cli_config);
+  }
+  static const SinhTestConfig configs[] = {
+      {"sinh_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_sinh_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
+int test_cosh(int argc, char **argv) {
+  if (argc >= 3) {
+    CoshTestConfig cli_config = {"test_cosh_cli", atoi(argv[1]), atoi(argv[2])};
+    return run_cosh_case(&cli_config);
+  }
+  static const CoshTestConfig configs[] = {
+      {"cosh_4x4", 4, 4},
+  };
+  int status = 0;
+  for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); i++) {
+    if (run_cosh_case(&configs[i]) != 0) status = -1;
+  }
+  return status;
+}
+
 int test_tanh(int argc, char **argv) {
   if (argc >= 3) {
     TanhTestConfig cli_config = {"test_tanh_cli", atoi(argv[1]), atoi(argv[2])};
@@ -6454,11 +7176,29 @@ static int run_all_tests(void) {
   if (test_sin(0, NULL) != 0) status = -1;
   if (test_tan(0, NULL) != 0) status = -1;
   if (test_cos(0, NULL) != 0) status = -1;
+  if (test_celu(0, NULL) != 0) status = -1;
+  if (test_selu(0, NULL) != 0) status = -1;
+  if (test_swish(0, NULL) != 0) status = -1;
+  if (test_softsign(0, NULL) != 0) status = -1;
+  if (test_logsigmoid(0, NULL) != 0) status = -1;
+  if (test_hardsigmoid(0, NULL) != 0) status = -1;
+  if (test_softplus(0, NULL) != 0) status = -1;
+  if (test_gelu(0, NULL) != 0) status = -1;
+  if (test_quick_gelu(0, NULL) != 0) status = -1;
+  if (test_elu(0, NULL) != 0) status = -1;
+  if (test_relu6(0, NULL) != 0) status = -1;
+  if (test_hardswish(0, NULL) != 0) status = -1;
+  if (test_mish(0, NULL) != 0) status = -1;
+  if (test_hardtanh(0, NULL) != 0) status = -1;
+  if (test_exp(0, NULL) != 0) status = -1;
+  if (test_exp2(0, NULL) != 0) status = -1;
   if (test_asin(0, NULL) != 0) status = -1;
   if (test_acos(0, NULL) != 0) status = -1;
   if (test_atan(0, NULL) != 0) status = -1;
   if (test_asinh(0, NULL) != 0) status = -1;
   if (test_acosh(0, NULL) != 0) status = -1;
+  if (test_sinh(0, NULL) != 0) status = -1;
+  if (test_cosh(0, NULL) != 0) status = -1;
   if (test_tanh(0, NULL) != 0) status = -1;
   if (test_atanh(0, NULL) != 0) status = -1;
   if (test_silu(0, NULL) != 0) status = -1;
@@ -6499,11 +7239,29 @@ static int run_named_test(const char *name, int argc, char **argv) {
   if (strcmp(name, "sin") == 0) return test_sin(argc, argv);
   if (strcmp(name, "tan") == 0) return test_tan(argc, argv);
   if (strcmp(name, "cos") == 0) return test_cos(argc, argv);
+  if (strcmp(name, "celu") == 0) return test_celu(argc, argv);
+  if (strcmp(name, "selu") == 0) return test_selu(argc, argv);
+  if (strcmp(name, "swish") == 0) return test_swish(argc, argv);
+  if (strcmp(name, "softsign") == 0) return test_softsign(argc, argv);
+  if (strcmp(name, "logsigmoid") == 0) return test_logsigmoid(argc, argv);
+  if (strcmp(name, "hardsigmoid") == 0) return test_hardsigmoid(argc, argv);
+  if (strcmp(name, "softplus") == 0) return test_softplus(argc, argv);
+  if (strcmp(name, "gelu") == 0) return test_gelu(argc, argv);
+  if (strcmp(name, "quick_gelu") == 0) return test_quick_gelu(argc, argv);
+  if (strcmp(name, "elu") == 0) return test_elu(argc, argv);
+  if (strcmp(name, "relu6") == 0) return test_relu6(argc, argv);
+  if (strcmp(name, "hardswish") == 0) return test_hardswish(argc, argv);
+  if (strcmp(name, "mish") == 0) return test_mish(argc, argv);
+  if (strcmp(name, "hardtanh") == 0) return test_hardtanh(argc, argv);
+  if (strcmp(name, "exp") == 0) return test_exp(argc, argv);
+  if (strcmp(name, "exp2") == 0) return test_exp2(argc, argv);
   if (strcmp(name, "asin") == 0) return test_asin(argc, argv);
   if (strcmp(name, "acos") == 0) return test_acos(argc, argv);
   if (strcmp(name, "atan") == 0) return test_atan(argc, argv);
   if (strcmp(name, "asinh") == 0) return test_asinh(argc, argv);
   if (strcmp(name, "acosh") == 0) return test_acosh(argc, argv);
+  if (strcmp(name, "sinh") == 0) return test_sinh(argc, argv);
+  if (strcmp(name, "cosh") == 0) return test_cosh(argc, argv);
   if (strcmp(name, "tanh") == 0) return test_tanh(argc, argv);
   if (strcmp(name, "atanh") == 0) return test_atanh(argc, argv);
   if (strcmp(name, "silu") == 0) return test_silu(argc, argv);
