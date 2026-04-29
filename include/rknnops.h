@@ -1091,52 +1091,10 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             
          }
 
-         int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2) ;
-         int argb_in = 10;
-         // bool skip_argb =
-         //    (conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
-         //    conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3) ||
-         //    (conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
-         //    conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1) ||
-         //    (conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
-         //    conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) ||
-         //    (conv_batch==1 && conv_in_channels==15 && in_h==5 && in_w==5 &&
-         //    conv_out_channels==35 && weight_in_channels==3 && conv_kernel_h==3 && conv_kernel_w==3) ||
-         //    (conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
-         //    conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3);
-
-         // if (!skip_argb) {
-         //    int ch = weight_in_channels;           // or conv_in_channels / conv_groups
-         //    if (ch >= 1 && ch <= 4) argb_in = 7 + ch;
-         //    conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) |
-         //                CNA_CONV_CON1_GROUP_LINE_OFF(1) |
-         //                CNA_CONV_CON1_ARGB_IN(argb_in);
-         // }
-         if (!( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
-            conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3) &&
-            !( conv_batch==1 && conv_in_channels==16 && in_h==32 && in_w==32 &&
-               conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==1 && conv_kernel_w==1) &&
-            !( conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
-               conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) &&
-            !( conv_batch==1 && conv_in_channels==15 && in_h==5 && in_w==5 &&
-               conv_out_channels==35 && weight_in_channels==3 && conv_kernel_h==3 && conv_kernel_w==3) &&
-            !( conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
-               conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) 
-            ) {
-            argb_in = 10;
-            if (( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
-               conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==1 && conv_kernel_w==1) || ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
-            conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==3 && conv_kernel_w==3)) {
-                  argb_in = 11;
-               }
-            else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
-               conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) argb_in = 8;
-            else if ( conv_batch==1 && conv_in_channels==4 && in_h==1 && in_w==1 &&
-               conv_out_channels==2 && weight_in_channels==2 && conv_kernel_h==1 && conv_kernel_w==1) argb_in = 11;
-
-            conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(argb_in) ;
+         int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2);
+         if ((conv_in_channels >= 1 && conv_in_channels <= 4) && !(conv_groups == conv_in_channels && conv_out_channels == conv_in_channels)) {
+            conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(7 + conv_in_channels);
          }
-
          int line_stride = 0;
          int surf_stride = 0;
          int cvt_con0 = CNA_CVT_CON0_CVT_BYPASS(1) ;
