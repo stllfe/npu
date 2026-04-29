@@ -1037,12 +1037,17 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
             conv_batch, conv_in_channels, in_h, in_w,
             conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
-         if (conv_batch == 1 && conv_in_channels == 3 && in_h == 2 && in_w == 2 &&
+         if (conv_batch == 1 && conv_in_channels == 3 &&
              conv_out_channels == 6 && weight_in_channels == 3 &&
              conv_kernel_h == 1 && conv_kernel_w == 1) {
-               printf("entered if");
-            cbuf_entries = 16;
-            surf_stride = 8;
+            if (in_h == 2 && in_w == 2){
+               cbuf_entries = 16;
+               surf_stride = 8;
+            } 
+            else if (in_h == 3 && in_w == 3){
+               feature_grains = 4;
+               cbuf_entries = 24;
+            }
          }
 
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));

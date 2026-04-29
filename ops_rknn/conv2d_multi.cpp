@@ -670,7 +670,7 @@ int main(int argc, char** argv) {
     // {"conv2d_3x3_g3", 6, 3, 5, 7, 3, 3, 3, "conv2d input shape (1, 3, 5, 7), weight shape (6, 1, 3, 3)"},
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d input shape (1, 3, 5, 7), weight shape (6, 3, 3, 5)"},
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d"},
-    {"conv2d", 6, 3, 2, 2, 1, 1, 3, "conv2d input shape (1, 3, 2, 2), weight shape (6, 1, 1, 1)"},
+    {"conv2d_1x1_3", 6, 3, 3, 3, 1, 1, 1, "conv2d input shape (1, 3, 3, 3), weight shape (6, 3, 1, 1)"},
 
     };
   }
