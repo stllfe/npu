@@ -613,8 +613,8 @@ def dump_gem(fd, flink, max_size=None):
                     else:
                         break
                 
-                # Only collapse if more than 2 zero blocks; otherwise print individually
-                if zero_blocks > 2:
+                # Only collapse if more than 4 zero blocks; otherwise print individually
+                if zero_blocks > 4:
                     print(Colors.highlight(f"[{zero_start:08x}] = 00000000 00000000 00000000 00000000"))
                     print(Colors.highlight(f"... {zero_blocks} blocks ({zero_blocks * 16} bytes) from 0x{zero_start:08x} to 0x{zero_start + zero_blocks * 16 - 1:08x} are all zeros"))
                 else:

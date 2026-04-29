@@ -45,6 +45,7 @@ static bool load_model(const std::string &path, std::vector<uint8_t> &data) {
 // Structure to hold test case configuration
 struct ConvConfig {
   std::string model_name;
+  int batch;
   int out_channels;
   int in_channels;
   int in_height;
@@ -61,6 +62,7 @@ static ConvConfig make_conv2d_case_nchw_weight(const std::string& model_name,
                                                const std::string& description) {
   ConvConfig cfg;
   cfg.model_name = model_name;
+  cfg.batch = n;
   cfg.out_channels = oc;
   cfg.in_channels = c;
   cfg.in_height = h;
@@ -116,6 +118,20 @@ static float mt_uniform(Mt19937* rng, float low, float high) {
   const double b = static_cast<double>(mt_extract(rng) >> 6);
   const double random = (a * 67108864.0 + b) / 9007199254740992.0;
   return static_cast<float>(low + (high - low) * random);
+}
+
+static void consume_input_rng(Mt19937* rng, int batch, int channels, int height, int width,
+                              float low, float high) {
+  for (int n = 0; n < batch; ++n) {
+    for (int c = 0; c < channels; ++c) {
+      for (int h = 0; h < height; ++h) {
+        for (int w = 0; w < width; ++w) {
+          (void)n;
+          mt_uniform(rng, low, high);
+        }
+      }
+    }
+  }
 }
 
 // Generate input data for a given shape using MT uniform RNG
@@ -305,14 +321,14 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
             << ", w_stride: " << native_output_attr.w_stride << std::endl;
 
   // Prepare input data
-  const int in_batch = 1;
+  const int in_batch = config.batch > 0 ? config.batch : 1;
   const int in_channels = config.in_channels > 0 ? config.in_channels : 3;
   const int in_height = config.in_height > 0 ? config.in_height : 5;
   const int in_width = config.in_width > 0 ? config.in_width : 7;
   const float low = -2.0f, high = 2.0f;
-  Mt19937 rng;
-  mt_seed(&rng, 0);
-  std::vector<__fp16> input = generate_input_data(in_batch, in_channels, in_height, in_width, &rng, low, high);
+  Mt19937 input_rng;
+  mt_seed(&input_rng, 0);
+  std::vector<__fp16> input = generate_input_data(in_batch, in_channels, in_height, in_width, &input_rng, low, high);
   std::vector<float> input_cpu(input.size());
   for (size_t i = 0; i < input.size(); ++i) {
     input_cpu[i] = static_cast<float>(input[i]);
@@ -490,8 +506,12 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
   }
 
   // Compute expected results on CPU (NCHW) using the same RNG sequence for weights
-  std::vector<float> expected = generate_weight_data(config, &rng, low, high);
-  std::vector<float> cpu_output(out_channels * out_height * out_width, 0.f);
+  Mt19937 weight_rng;
+  mt_seed(&weight_rng, 0);
+  // Match model generation: consume RNG for a single batch before weights.
+  consume_input_rng(&weight_rng, 1, in_channels, in_height, in_width, low, high);
+  std::vector<float> expected = generate_weight_data(config, &weight_rng, low, high);
+  std::vector<float> cpu_output(static_cast<size_t>(out_batch) * out_channels * out_height * out_width, 0.f);
 
   if (verbose) {
     std::cout << "\n  Generated Weights:" << std::endl;
@@ -526,31 +546,34 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
     }
   }
 
-  for (int oc = 0; oc < out_channels; ++oc) {
-    for (int oy = 0; oy < out_height; ++oy) {
-      for (int ox = 0; ox < out_width; ++ox) {
-        float acc = 0.f;
-        for (int ic = 0; ic < config.in_channels; ++ic) {
-          int in_per_group = config.in_channels / config.groups;
-          int out_per_group = config.out_channels / config.groups;
-          int ic_group = ic / in_per_group;
-          int oc_group = oc / out_per_group;
-          if (ic_group != oc_group) continue;  // respect grouping
-          int ic_in_group = ic % in_per_group;
+  for (int n = 0; n < out_batch; ++n) {
+    for (int oc = 0; oc < out_channels; ++oc) {
+      for (int oy = 0; oy < out_height; ++oy) {
+        for (int ox = 0; ox < out_width; ++ox) {
+          float acc = 0.f;
+          for (int ic = 0; ic < config.in_channels; ++ic) {
+            int in_per_group = config.in_channels / config.groups;
+            int out_per_group = config.out_channels / config.groups;
+            int ic_group = ic / in_per_group;
+            int oc_group = oc / out_per_group;
+            if (ic_group != oc_group) continue;  // respect grouping
+            int ic_in_group = ic % in_per_group;
 
-          for (int ky = 0; ky < config.kernel_h; ++ky) {
-            for (int kx = 0; kx < config.kernel_w; ++kx) {
-              // Input indexing
-              int in_idx = ic * in_height * in_width + (oy + ky) * in_width + (ox + kx);
-              // Weight indexing
-              int wt_idx = oc * (config.in_channels / config.groups) * config.kernel_h * config.kernel_w
-                          + ic_in_group * config.kernel_h * config.kernel_w + ky * config.kernel_w + kx;
+            for (int ky = 0; ky < config.kernel_h; ++ky) {
+              for (int kx = 0; kx < config.kernel_w; ++kx) {
+                // Input indexing (NCHW)
+                int in_idx = ((n * config.in_channels + ic) * in_height + (oy + ky)) * in_width + (ox + kx);
+                // Weight indexing
+                int wt_idx = oc * (config.in_channels / config.groups) * config.kernel_h * config.kernel_w
+                            + ic_in_group * config.kernel_h * config.kernel_w + ky * config.kernel_w + kx;
 
-              acc += input_cpu[in_idx] * expected[wt_idx];
+                acc += input_cpu[in_idx] * expected[wt_idx];
+              }
             }
           }
+          size_t out_idx = ((static_cast<size_t>(n) * out_channels + oc) * out_height + oy) * out_width + ox;
+          cpu_output[out_idx] = acc;
         }
-        cpu_output[oc * out_height * out_width + oy * out_width + ox] = acc;
       }
     }
   }
@@ -558,29 +581,35 @@ static bool run_conv_test(const ConvConfig& config, bool verbose) {
   // Print detailed results
   if (verbose) {
     std::cout << "\n  Expected Output (CPU computed):" << std::endl;
-    for (int oc = 0; oc < out_channels; ++oc) {
-      std::cout << "    Output Channel " << oc << ":" << std::endl;
-      for (int h = 0; h < out_height; ++h) {
-        std::cout << "      ";
-        for (int w = 0; w < out_width; ++w) {
-          int idx = oc * out_height * out_width + h * out_width + w;
-          std::cout << cpu_output[idx] << " ";
+    for (int n = 0; n < out_batch; ++n) {
+      std::cout << "    n=" << n << std::endl;
+      for (int oc = 0; oc < out_channels; ++oc) {
+        std::cout << "    Output Channel " << oc << ":" << std::endl;
+        for (int h = 0; h < out_height; ++h) {
+          std::cout << "      ";
+          for (int w = 0; w < out_width; ++w) {
+            size_t idx = ((static_cast<size_t>(n) * out_channels + oc) * out_height + h) * out_width + w;
+            std::cout << cpu_output[idx] << " ";
+          }
         }
+        std::cout << std::endl;
       }
-      std::cout << std::endl;
     }
 
     std::cout << "\n  Actual Output (RKNN):" << std::endl;
-    for (int oc = 0; oc < out_channels; ++oc) {
-      std::cout << "    Output Channel " << oc << ":" << std::endl;
-      for (int h = 0; h < out_height; ++h) {
-        std::cout << "      ";
-        for (int w = 0; w < out_width; ++w) {
-          int idx = oc * out_height * out_width + h * out_width + w;
-          std::cout << output_nchw[idx] << " ";
+    for (int n = 0; n < out_batch; ++n) {
+      std::cout << "    n=" << n << std::endl;
+      for (int oc = 0; oc < out_channels; ++oc) {
+        std::cout << "    Output Channel " << oc << ":" << std::endl;
+        for (int h = 0; h < out_height; ++h) {
+          std::cout << "      ";
+          for (int w = 0; w < out_width; ++w) {
+            size_t idx = ((static_cast<size_t>(n) * out_channels + oc) * out_height + h) * out_width + w;
+            std::cout << output_nchw[idx] << " ";
+          }
         }
+        std::cout << std::endl;
       }
-      std::cout << std::endl;
     }
   }
 
@@ -626,6 +655,7 @@ int main(int argc, char** argv) {
     for (int n = start; n <= end; ++n) {
       ConvConfig cfg;
       cfg.model_name = "conv2d_1x1_" + std::to_string(n);
+      cfg.batch = 1;
       cfg.out_channels = 6;
       cfg.in_channels = 3;
       cfg.in_height = n;
@@ -649,9 +679,9 @@ int main(int argc, char** argv) {
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d input shape (1, 3, 5, 7), weight shape (6, 3, 3, 5)"},
     // {"conv2d_3x5", 6, 3, 5, 7, 3, 5, 1, "conv2d"},
     make_conv2d_case_nchw_weight(
-        "conv2d_i1163232_w161611",
-        1, 16, 32, 32,
-        16, 16, 1, 1,
+        "conv2d_i1499_w4433",
+        1, 4, 9, 9,
+        4, 4, 3, 3,
         "conv2d"),
     };
   }
