@@ -1041,30 +1041,26 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int dataout_atomics = dataout_width * out_h;
          int aligned_in_channels = ((conv_in_channels + align_c - 1) / align_c) * align_c;
          int weight_bytes_per_kernel = conv_kernel_h * conv_kernel_w * aligned_in_channels * sizeof(__fp16);
-         int weight_bytes_total = weight_bytes_per_kernel * conv_out_channels;
          int surface_add = out_width_stride * 2;
-         int cbuf_entries = dataout_atomics * 2;
-         if (conv_groups == 1 && conv_kernel_h == 2 && conv_kernel_w == 5 && conv_in_channels == 3 && conv_out_channels == 6) {
-           cbuf_entries = 40;
-         }
+         int cbuf_entries = 0;
+         printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
+            conv_batch, conv_in_channels, in_h, in_w,
+            conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
+
          if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 1 && conv_in_channels == 3 && conv_out_channels == 6) {
            out_width_stride = 24;
            surface_add = out_width_stride * 2;
-           cbuf_entries = 40;
          }
          if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
            out_width_stride = 16;
            surface_add = out_width_stride * 2;
-           cbuf_entries = 40;
          }
          if (conv_groups == 1 && conv_kernel_h == 3 && conv_kernel_w == 5 && conv_in_channels == 3 && conv_out_channels == 6) {
            int stride_width = out_w > 1 ? (out_w - 1) : out_w;
            out_width_stride = (stride_width * align_out_c) / 4;
            surface_add = out_width_stride * 2;
-           cbuf_entries = 40;
          }
          if (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6) {
-           cbuf_entries = 40;
            out_width_stride = 16;
            surface_add = out_width_stride * 2;
          }
@@ -1079,14 +1075,12 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
                 conv_in_channels == 3 && conv_out_channels == 6) ||
             (conv_groups == 3 && conv_kernel_h == 3 && conv_kernel_w == 3 && conv_in_channels == 3 && conv_out_channels == 6)) {
             surf_stride = 32;
-
          }
-         printf("input: (%d,%d,%d,%d), weight: (%d,%d,%d,%d)\n",
-            conv_batch, conv_in_channels, in_h, in_w,
-            conv_out_channels, weight_in_channels, conv_kernel_h, conv_kernel_w);
-         if (conv_batch == 1 && conv_in_channels == 3 &&
-             conv_out_channels == 6 && weight_in_channels == 3 &&
-             conv_kernel_h == 1 && conv_kernel_w == 1) {
+
+         if (
+            conv_batch == 1 && conv_in_channels == 3 
+            && conv_out_channels == 6 && weight_in_channels == 3 && conv_kernel_h == 1 && conv_kernel_w == 1
+         ){
             int grains = (out_h < 48) ? (out_h + 1) : out_h;
             uint64_t row_bytes = (uint64_t)width_stride * (uint64_t)align_c * sizeof(__fp16);
             if (row_bytes > 0) {
@@ -1097,16 +1091,13 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             }
             feature_grains = grains;
             
-            cbuf_entries = width_stride * out_h;
             surf_stride = (out_h > 1) ? (width_stride * (out_h - 1)) : 0;
             if (in_h == 2 && in_w == 2){
-               cbuf_entries = 16;
                surf_stride = 8;
             } 
             
             if (in_h == in_w) {
                feature_grains = in_w;
-               cbuf_entries = width_stride * out_h;
             }
             
          }
@@ -1143,6 +1134,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int cv5_con5 = 0x00000fff;
          int weight_kernels = 0 ;
          int core_misc_cfg = CORE_MISC_CFG_PROC_PRECISION(2);
+
          if (( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
             feature_grains = 21;
@@ -1151,8 +1143,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             surface_add = 512;
             out_width_stride = 256;
             weight_bytes_per_kernel = 288; 
-            weight_bytes_total = weight_bytes_per_kernel * conv_out_channels;
-            cbuf_entries = 9;
             line_stride = 72;
             surf_stride = 252;
             align_c = 16;
@@ -1164,31 +1154,26 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             feature_grains = 33;
             data_in_channel_aligned = 16;
             weight_bytes_per_kernel = 32; 
-            cbuf_entries = 16;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             line_stride = 128;
             surf_stride = 896;
             align_c = 16;
             cv5_con5 = 0;
-            weight_bytes_total = 0x200;
          }
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
             conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==3 && conv_kernel_w==3) {
             feature_grains = 12;
             data_in_channel_aligned = 8;
             weight_bytes_per_kernel = 144; 
-            cbuf_entries = 144;
             line_stride = 16;
             surf_stride = 128;
             cv5_con5 = 0x0000ffff;
-            weight_bytes_total = 0x240;
             out_width_stride = 52;
             surface_add = 104;
          }
          else if ( conv_batch==1 && conv_in_channels==1 && in_h==5 && in_w==7 &&
             conv_out_channels==6 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3) {
             feature_grains = 8;
-            cbuf_entries = 40;
             line_stride = 8;
             surf_stride = 32;
             cv5_con5 = 0x0000ffff;
@@ -1198,7 +1183,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          else if ( conv_batch==1 && conv_in_channels==4 && in_h==1 && in_w==1 &&
             conv_out_channels==2 && weight_in_channels==2 && conv_kernel_h==1 && conv_kernel_w==1) {
             feature_grains = 2;
-            cbuf_entries = 8;
             line_stride = 8;
             surf_stride = 0;
             cv5_con5 = 0x0000ffff;
@@ -1208,9 +1192,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             conv_con1 |= CNA_CONV_CON1_CONV_MODE(3);
             feature_grains = 32;
             data_in_channel_aligned = 32;
-            weight_bytes_total = 0x40;
             weight_kernels = 1;
-            cbuf_entries = 32;
             line_stride = 128;
             surf_stride = 896;
             align_c = 32;
@@ -1224,7 +1206,6 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             feature_grains = 8;
             width_stride = 5;
             data_in_channel_aligned = 16;
-            cbuf_entries = 3;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             line_stride = 20;
             surf_stride = 5;
@@ -1238,9 +1219,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             // conv_con1 |= CNA_CONV_CON1_CONV_MODE(3);
             // feature_grains = 14;
             // width_stride = 28;
-            // weight_bytes_total = 0x90;
             weight_kernels = 1;
-            cbuf_entries = 7;
             cvt_con0 |= CNA_CVT_CON0_DATA_SIGN(1) | CNA_CVT_CON0_CVT_TYPE(1) ;
             line_stride = 112;
             surf_stride = 196;
@@ -1250,6 +1229,18 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             core_misc_cfg |= CORE_MISC_CFG_DW_EN(1) ;
             out_channel_field = 31;
          }
+
+         // Derive data_entries from row granularity; 8-channel paths scale by height.
+         int row_entries = (width_stride * align_c + 31) / 32;
+         if (row_entries < 1) row_entries = 1;
+         bool is_depthwise = (conv_groups == conv_in_channels && conv_out_channels == conv_in_channels);
+         if (align_c >= 16 || is_depthwise) {
+            cbuf_entries = row_entries;
+         } else {
+            cbuf_entries = row_entries * in_h * 4;
+         }
+         if (cbuf_entries < 1) cbuf_entries = 1;
+         
          EMIT(REG_DPU_S_POINTER, DPU_S_POINTER_POINTER_PP_MODE(1) | DPU_S_POINTER_EXECUTER_PP_EN(1) | DPU_S_POINTER_POINTER_PP_EN(1));
          EMIT(REG_CNA_CONV_CON1, conv_con1);
          EMIT(REG_CNA_CONV_CON2, CNA_CONV_CON2_FEATURE_GRAINS(feature_grains));
@@ -1258,6 +1249,8 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_CNA_DATA_SIZE1, CNA_DATA_SIZE1_DATAIN_CHANNEL_REAL(data_in_channel_real) | CNA_DATA_SIZE1_DATAIN_CHANNEL(data_in_channel_aligned));
          EMIT(REG_CNA_DATA_SIZE2, CNA_DATA_SIZE2_DATAOUT_WIDTH(dataout_width));
          EMIT(REG_CNA_DATA_SIZE3, CNA_DATA_SIZE3_DATAOUT_ATOMICS(dataout_atomics));
+
+         int weight_bytes_total = weight_bytes_per_kernel * conv_out_channels;
          EMIT(REG_CNA_WEIGHT_SIZE0, weight_bytes_total);
          EMIT(REG_CNA_WEIGHT_SIZE1, CNA_WEIGHT_SIZE1_WEIGHT_BYTES_PER_KERNEL(weight_bytes_per_kernel));
          if (weight_kernels == 0) weight_kernels = conv_out_channels;
@@ -1286,17 +1279,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          EMIT(REG_CORE_DATAOUT_SIZE_0, CORE_DATAOUT_SIZE_0_DATAOUT_HEIGHT(out_h - 1) | CORE_DATAOUT_SIZE_0_DATAOUT_WIDTH(out_w - 1));
          EMIT(REG_CORE_DATAOUT_SIZE_1, CORE_DATAOUT_SIZE_1_DATAOUT_CHANNEL(out_channel_field));
          emit_raw(&regs, CORE | 0x1, 0x3030, 0);
-         int feature_mode_cfg = DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2);
-         if (  
-         (conv_batch==1 && conv_in_channels==32 && in_h==32 && in_w==32 &&
-            conv_out_channels==32 && weight_in_channels==1 && conv_kernel_h==1 && conv_kernel_w==1) 
-            ||
-         ( conv_batch==1 && conv_in_channels==3 && in_h==11 && in_w==28 &&
-            conv_out_channels==3 && weight_in_channels==1 && conv_kernel_h==3 && conv_kernel_w==3)
-         ) {
-               feature_mode_cfg |= DPU_FEATURE_MODE_CFG_CONV_MODE(3) ;
-         }
-         EMIT(REG_DPU_FEATURE_MODE_CFG, feature_mode_cfg);
+         EMIT(REG_DPU_FEATURE_MODE_CFG, DPU_FEATURE_MODE_CFG_BURST_LEN(15) | DPU_FEATURE_MODE_CFG_OUTPUT_MODE(2) | DPU_FEATURE_MODE_CFG_CONV_MODE(3 * (int)is_depthwise) );
          EMIT(REG_DPU_DATA_FORMAT, DPU_DATA_FORMAT_OUT_PRECISION(2) | DPU_DATA_FORMAT_IN_PRECISION(2) | DPU_DATA_FORMAT_PROC_PRECISION(2));
          EMIT(REG_DPU_DST_BASE_ADDR, DPU_DST_BASE_ADDR_DST_BASE_ADDR(output_dma));
          EMIT(REG_DPU_DST_SURF_STRIDE, DPU_DST_SURF_STRIDE_DST_SURF_STRIDE(out_width_stride));
