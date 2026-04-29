@@ -1348,6 +1348,7 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
             if (notch_steps > 12u) notch_steps = 12u;
             notch_val = 7u + 8u * notch_steps;
          }
+         if (params.M == 33 && params.K == 1 && params.N == 33 ) notch_val = 15;
          
          EMIT(REG_DPU_DATA_CUBE_NOTCH_ADDR, DPU_DATA_CUBE_NOTCH_ADDR_NOTCH_ADDR_1(notch_val) |DPU_DATA_CUBE_NOTCH_ADDR_NOTCH_ADDR_0(notch_val));
          

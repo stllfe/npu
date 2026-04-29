@@ -1,6 +1,8 @@
 # Know issues
 
 matmul failed at
+- 33x1x33
+- 65x1x33
 - 424x424x424
 
 # What works
