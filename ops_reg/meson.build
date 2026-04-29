@@ -179,6 +179,49 @@ foreach op : lut_cases
     args: [op[0]])
 endforeach
 
+ops_reg_smoke_cases = [
+  'add',
+  'minus',
+  'mul',
+  'div',
+  'idiv',
+  'abs',
+  'neg',
+  'max',
+  'cmple',
+  'cmpgt',
+  'cmpge',
+  'cmplt',
+  'cmpeq',
+  'cmpneq',
+  'roundoff',
+  'rounddown',
+  'where',
+  'relu',
+  'maxpool',
+  'minpool',
+  'avgpool',
+  'globalmaxpool',
+  'globalminpool',
+]
+
+sh_prog = find_program('sh')
+
+foreach op : ops_reg_smoke_cases
+  test('ops_reg_@0@'.format(op),
+    sh_prog,
+    is_parallel: false,
+    suite: 'ops_reg',
+    args: ['-c', '''
+set -eu
+log="/tmp/test_ops_reg_@0@.log"
+echo "=== @0@ ==="
+"@1@" "@0@" | tee "$log"
+"grep" -q "matches CPU -> YES" "$log"
+'''.format(op, ops_reg_exe.full_path())]
+  )
+endforeach
+
 run_target('test_matmul',
   command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'matmul'],
 )
@@ -193,4 +236,8 @@ run_target('test_conv2d',
 
 run_target('test_lut',
   command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'lut'],
+)
+
+run_target('test_ops_reg',
+  command: ['meson', 'test', '--maxfail=1', '-C', meson.project_build_root(), '--suite', 'ops_reg:ops_reg'],
 )

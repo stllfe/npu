@@ -461,74 +461,6 @@ static int cmpeq_last_size = 0;
 static int cmpeq_last_rows = 0;
 static int cmpeq_last_cols = 0;
 
-int test_alu(int argc, char **argv) {
-    int size = 16 ;
-    if (argc > 1) {
-        size = atoi(argv[1]);
-    }
-    __fp16* a = (__fp16*)malloc(size * sizeof(__fp16));
-    __fp16* b = (__fp16*)malloc(size * sizeof(__fp16));
-    // printf("size: %d %d\n", sizeof(a), sizeof(b));
-
-    for (size_t i = 0; i < size; i++) {
-        a[i] = 2.3f;
-        b[i] = 2.1f;
-        if (i % 2 == 0) {
-            a[i] = -a[i];
-            b[i] = -b[i];
-        }
-    }
-    // 4'd0: Max;
-    // 4'd1: Min;
-    // 4'd2: Add;
-    // 4'd3: Div; # overflow issue
-    // 4'd4: Minus;
-    // CUSTOM 9: MUL
-    // CUSTOM 10: RELU
-    // CUSTOM 14: SILU
-    // __fp16* result = float16_alu_op(a, b, 2, size);
-    __fp16* result = float16_alu_op(a, b, 10, size);
-    
-    printf("Input0: ");
-    for (size_t i = 0; i < size; i++) printf("%f ", a[i]);
-    printf("\n");
-    printf("Input1: ");
-    for (size_t i = 0; i < size; i++) printf("%f ", b[i]);
-    printf("\n");
-    printf("Result/Input0: ");
-    for (size_t i = 0; i < size; i++) {
-        // float as_fp32 = (float)result[i];
-        printf("%f ", result[i]);
-    }
-    printf("\n");
-    
-    const float kReluAtol = 1e-3f;
-    int matches = result ? 1 : 0;
-    float max_abs_diff = 0.0f;
-    if (result) {
-        for (size_t i = 0; i < size; i++) {
-            float expected = (float)b[i];
-            if (expected < 0.0f) expected = 0.0f;
-            float actual = (float)result[i];
-            float diff = fabsf(actual - expected);
-            if (diff > max_abs_diff) max_abs_diff = diff;
-            if (diff > kReluAtol) {
-                matches = 0;
-                break;
-            }
-        }
-    }
-    printf("test_alu: matches CPU -> %s (max diff=%.6f)\n",
-        matches ? "YES" : "NO", max_abs_diff);
-
-    breakpoint();
-
-    free(result);
-    free(a);
-    free(b);
-    return 0;
-}
-
 static float roundoff_ref(float in_val);
 
 static int run_div_case(const DivTestConfig *config) {
@@ -2057,7 +1989,6 @@ static int run_add_case(const AddTestConfig *config) {
   const size_t stride_fp16 = 0x10 / sizeof(__fp16);
   for (int i = 0; i < size; i++) unpacked[i] = result[(size_t)i * stride_fp16];
   free(result);
-  free(result);
 
   float max_abs_diff = 0.0f;
   for (int i = 0; i < size; i++) {
@@ -2122,7 +2053,6 @@ static int run_mul_case(const MulTestConfig *config) {
 
   const size_t stride_fp16 = 0x10 / sizeof(__fp16);
   for (int i = 0; i < size; i++) unpacked[i] = result[(size_t)i * stride_fp16];
-  free(result);
   free(result);
 
   float max_abs_diff = 0.0f;
@@ -2497,7 +2427,6 @@ static int run_max_case(const MaxTestConfig *config) {
 
   const size_t stride_fp16 = 0x10 / sizeof(__fp16);
   for (int i = 0; i < size; i++) unpacked[i] = result[(size_t)i * stride_fp16];
-  free(result);
   free(result);
 
   float max_abs_diff = 0.0f;
@@ -6441,13 +6370,6 @@ int test_conv2d(int argc, char **argv) {
     return run_conv2d_case(&cli_config);
   }
   static const Conv2dTestConfig configs[] = {
-    // {1, 3, 5, 7, 6, 3, 2, 1, 1, "conv2d_i1357_w6321"},
-    // {1, 3, 5, 7, 6, 3, 2, 3, 1, "conv2d_i1357_w6323"},
-    // {1, 3, 5, 7, 6, 3, 2, 5, 1, "conv2d_i1357_w6325"},
-    // {1, 3, 5, 7, 6, 3, 3, 1, 1, "conv2d_i1357_w6331"},
-    // {1, 3, 5, 7, 6, 3, 3, 3, 1, "conv2d_i1357_w6333"},
-    // {1, 3, 5, 7, 6, 1, 3, 3, 3, "conv2d_i1357_w6133_g3"},
-    // {1, 3, 5, 7, 6, 3, 3, 5, 1, "conv2d_i1357_w6335"},
     {1, 3, 11, 28, 3, 1, 3, 3, 3, "conv2d"},
   };
 
@@ -6928,129 +6850,47 @@ int test_atanh(int argc, char **argv) {
   return status;
 }
 
+typedef int (*test_fn)(int argc, char **argv);
+
+typedef struct {
+  const char *name;
+  test_fn fn;
+} TestEntry;
+
+static const TestEntry kTests[] = {
+#define TEST_ENTRY(name) {#name, test_##name}
+    TEST_ENTRY(max), TEST_ENTRY(div), TEST_ENTRY(idiv), TEST_ENTRY(maxpool),
+    TEST_ENTRY(globalmaxpool), TEST_ENTRY(globalminpool), TEST_ENTRY(minpool),
+    TEST_ENTRY(avgpool), TEST_ENTRY(globalavgpool), TEST_ENTRY(cmple),
+    TEST_ENTRY(cmpgt), TEST_ENTRY(cmpge), TEST_ENTRY(cmplt), TEST_ENTRY(cmpeq),
+    TEST_ENTRY(cmpneq), TEST_ENTRY(add), TEST_ENTRY(mul), TEST_ENTRY(rounddown),
+    TEST_ENTRY(roundoff), TEST_ENTRY(abs), TEST_ENTRY(where), TEST_ENTRY(neg),
+    TEST_ENTRY(minus), TEST_ENTRY(sigmoid), TEST_ENTRY(sin), TEST_ENTRY(tan),
+    TEST_ENTRY(cos), TEST_ENTRY(celu), TEST_ENTRY(selu), TEST_ENTRY(swish),
+    TEST_ENTRY(softsign), TEST_ENTRY(logsigmoid), TEST_ENTRY(hardsigmoid),
+    TEST_ENTRY(softplus), TEST_ENTRY(gelu), TEST_ENTRY(quick_gelu),
+    TEST_ENTRY(elu), TEST_ENTRY(relu6), TEST_ENTRY(hardswish),
+    TEST_ENTRY(mish), TEST_ENTRY(hardtanh), TEST_ENTRY(exp), TEST_ENTRY(exp2),
+    TEST_ENTRY(asin), TEST_ENTRY(acos), TEST_ENTRY(atan), TEST_ENTRY(asinh),
+    TEST_ENTRY(acosh), TEST_ENTRY(sinh), TEST_ENTRY(cosh), TEST_ENTRY(tanh),
+    TEST_ENTRY(atanh), TEST_ENTRY(silu), TEST_ENTRY(relu),
+    TEST_ENTRY(conv1d), TEST_ENTRY(conv2d), TEST_ENTRY(matmul),
+#undef TEST_ENTRY
+};
+
 static int run_all_tests(void) {
   int status = 0;
-  if (test_alu(0, NULL) != 0) status = -1;
-  if (test_max(0, NULL) != 0) status = -1;
-  if (test_div(0, NULL) != 0) status = -1;
-  if (test_idiv(0, NULL) != 0) status = -1;
-  if (test_maxpool(0, NULL) != 0) status = -1;
-  if (test_globalmaxpool(0, NULL) != 0) status = -1;
-  if (test_globalminpool(0, NULL) != 0) status = -1;
-  if (test_minpool(0, NULL) != 0) status = -1;
-  if (test_avgpool(0, NULL) != 0) status = -1;
-  if (test_globalavgpool(0, NULL) != 0) status = -1;
-  if (test_cmple(0, NULL) != 0) status = -1;
-  if (test_cmpgt(0, NULL) != 0) status = -1;
-  if (test_cmpge(0, NULL) != 0) status = -1;
-  if (test_cmplt(0, NULL) != 0) status = -1;
-  if (test_cmpeq(0, NULL) != 0) status = -1;
-  if (test_cmpneq(0, NULL) != 0) status = -1;
-  if (test_add(0, NULL) != 0) status = -1;
-  if (test_mul(0, NULL) != 0) status = -1;
-  if (test_rounddown(0, NULL) != 0) status = -1;
-  if (test_roundoff(0, NULL) != 0) status = -1;
-  if (test_abs(0, NULL) != 0) status = -1;
-  if (test_where(0, NULL) != 0) status = -1;
-  if (test_neg(0, NULL) != 0) status = -1;
-  if (test_minus(0, NULL) != 0) status = -1;
-  if (test_sigmoid(0, NULL) != 0) status = -1;
-  if (test_sin(0, NULL) != 0) status = -1;
-  if (test_tan(0, NULL) != 0) status = -1;
-  if (test_cos(0, NULL) != 0) status = -1;
-  if (test_celu(0, NULL) != 0) status = -1;
-  if (test_selu(0, NULL) != 0) status = -1;
-  if (test_swish(0, NULL) != 0) status = -1;
-  if (test_softsign(0, NULL) != 0) status = -1;
-  if (test_logsigmoid(0, NULL) != 0) status = -1;
-  if (test_hardsigmoid(0, NULL) != 0) status = -1;
-  if (test_softplus(0, NULL) != 0) status = -1;
-  if (test_gelu(0, NULL) != 0) status = -1;
-  if (test_quick_gelu(0, NULL) != 0) status = -1;
-  if (test_elu(0, NULL) != 0) status = -1;
-  if (test_relu6(0, NULL) != 0) status = -1;
-  if (test_hardswish(0, NULL) != 0) status = -1;
-  if (test_mish(0, NULL) != 0) status = -1;
-  if (test_hardtanh(0, NULL) != 0) status = -1;
-  if (test_exp(0, NULL) != 0) status = -1;
-  if (test_exp2(0, NULL) != 0) status = -1;
-  if (test_asin(0, NULL) != 0) status = -1;
-  if (test_acos(0, NULL) != 0) status = -1;
-  if (test_atan(0, NULL) != 0) status = -1;
-  if (test_asinh(0, NULL) != 0) status = -1;
-  if (test_acosh(0, NULL) != 0) status = -1;
-  if (test_sinh(0, NULL) != 0) status = -1;
-  if (test_cosh(0, NULL) != 0) status = -1;
-  if (test_tanh(0, NULL) != 0) status = -1;
-  if (test_atanh(0, NULL) != 0) status = -1;
-  if (test_silu(0, NULL) != 0) status = -1;
-  if (test_relu(0, NULL) != 0) status = -1;
-  if (test_conv1d(0, NULL) != 0) status = -1;
-  if (test_conv2d(0, NULL) != 0) status = -1;
-  if (test_matmul(0, NULL) != 0) status = -1;
+  for (size_t i = 0; i < sizeof(kTests) / sizeof(kTests[0]); i++) {
+    if (kTests[i].fn(0, NULL) != 0) status = -1;
+  }
   return status;
 }
 
 static int run_named_test(const char *name, int argc, char **argv) {
   if (!name) return -2;
-  if (strcmp(name, "alu") == 0) return test_alu(argc, argv);
-  if (strcmp(name, "max") == 0) return test_max(argc, argv);
-  if (strcmp(name, "div") == 0) return test_div(argc, argv);
-  if (strcmp(name, "idiv") == 0) return test_idiv(argc, argv);
-  if (strcmp(name, "maxpool") == 0) return test_maxpool(argc, argv);
-  if (strcmp(name, "globalmaxpool") == 0) return test_globalmaxpool(argc, argv);
-  if (strcmp(name, "globalminpool") == 0) return test_globalminpool(argc, argv);
-  if (strcmp(name, "minpool") == 0) return test_minpool(argc, argv);
-  if (strcmp(name, "avgpool") == 0) return test_avgpool(argc, argv);
-  if (strcmp(name, "globalavgpool") == 0) return test_globalavgpool(argc, argv);
-  if (strcmp(name, "cmple") == 0) return test_cmple(argc, argv);
-  if (strcmp(name, "cmpgt") == 0) return test_cmpgt(argc, argv);
-  if (strcmp(name, "cmpge") == 0) return test_cmpge(argc, argv);
-  if (strcmp(name, "cmplt") == 0) return test_cmplt(argc, argv);
-  if (strcmp(name, "cmpeq") == 0) return test_cmpeq(argc, argv);
-  if (strcmp(name, "cmpneq") == 0) return test_cmpneq(argc, argv);
-  if (strcmp(name, "add") == 0) return test_add(argc, argv);
-  if (strcmp(name, "mul") == 0) return test_mul(argc, argv);
-  if (strcmp(name, "rounddown") == 0) return test_rounddown(argc, argv);
-  if (strcmp(name, "roundoff") == 0) return test_roundoff(argc, argv);
-  if (strcmp(name, "abs") == 0) return test_abs(argc, argv);
-  if (strcmp(name, "where") == 0) return test_where(argc, argv);
-  if (strcmp(name, "neg") == 0) return test_neg(argc, argv);
-  if (strcmp(name, "minus") == 0) return test_minus(argc, argv);
-  if (strcmp(name, "sigmoid") == 0) return test_sigmoid(argc, argv);
-  if (strcmp(name, "sin") == 0) return test_sin(argc, argv);
-  if (strcmp(name, "tan") == 0) return test_tan(argc, argv);
-  if (strcmp(name, "cos") == 0) return test_cos(argc, argv);
-  if (strcmp(name, "celu") == 0) return test_celu(argc, argv);
-  if (strcmp(name, "selu") == 0) return test_selu(argc, argv);
-  if (strcmp(name, "swish") == 0) return test_swish(argc, argv);
-  if (strcmp(name, "softsign") == 0) return test_softsign(argc, argv);
-  if (strcmp(name, "logsigmoid") == 0) return test_logsigmoid(argc, argv);
-  if (strcmp(name, "hardsigmoid") == 0) return test_hardsigmoid(argc, argv);
-  if (strcmp(name, "softplus") == 0) return test_softplus(argc, argv);
-  if (strcmp(name, "gelu") == 0) return test_gelu(argc, argv);
-  if (strcmp(name, "quick_gelu") == 0) return test_quick_gelu(argc, argv);
-  if (strcmp(name, "elu") == 0) return test_elu(argc, argv);
-  if (strcmp(name, "relu6") == 0) return test_relu6(argc, argv);
-  if (strcmp(name, "hardswish") == 0) return test_hardswish(argc, argv);
-  if (strcmp(name, "mish") == 0) return test_mish(argc, argv);
-  if (strcmp(name, "hardtanh") == 0) return test_hardtanh(argc, argv);
-  if (strcmp(name, "exp") == 0) return test_exp(argc, argv);
-  if (strcmp(name, "exp2") == 0) return test_exp2(argc, argv);
-  if (strcmp(name, "asin") == 0) return test_asin(argc, argv);
-  if (strcmp(name, "acos") == 0) return test_acos(argc, argv);
-  if (strcmp(name, "atan") == 0) return test_atan(argc, argv);
-  if (strcmp(name, "asinh") == 0) return test_asinh(argc, argv);
-  if (strcmp(name, "acosh") == 0) return test_acosh(argc, argv);
-  if (strcmp(name, "sinh") == 0) return test_sinh(argc, argv);
-  if (strcmp(name, "cosh") == 0) return test_cosh(argc, argv);
-  if (strcmp(name, "tanh") == 0) return test_tanh(argc, argv);
-  if (strcmp(name, "atanh") == 0) return test_atanh(argc, argv);
-  if (strcmp(name, "silu") == 0) return test_silu(argc, argv);
-  if (strcmp(name, "relu") == 0) return test_relu(argc, argv);
-  if (strcmp(name, "conv1d") == 0) return test_conv1d(argc, argv);
-  if (strcmp(name, "conv2d") == 0) return test_conv2d(argc, argv);
-  if (strcmp(name, "matmul") == 0) return test_matmul(argc, argv);
+  for (size_t i = 0; i < sizeof(kTests) / sizeof(kTests[0]); i++) {
+    if (strcmp(name, kTests[i].name) == 0) return kTests[i].fn(argc, argv);
+  }
   return -2;
 }
 
