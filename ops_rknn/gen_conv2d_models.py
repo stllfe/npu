@@ -43,7 +43,7 @@ class Mt19937:
 
 
 def generate_weights(in_ch: int, out_ch: int, h: int, w: int,
-                     kh: int, kw: int, low: float, high: float):
+                     kh: int, kw: int, groups: int, low: float, high: float):
     rng = Mt19937(0)
     # Consume input RNG draws (matches conv2d_multi.cpp)
     for _ in range(1):  # batch
@@ -52,8 +52,9 @@ def generate_weights(in_ch: int, out_ch: int, h: int, w: int,
                 for _ in range(w):
                     rng.uniform(low, high)
     weights = []
+    in_ch_per_group = in_ch // max(1, groups)
     for _oc in range(out_ch):
-        for _ic in range(in_ch):
+        for _ic in range(in_ch_per_group):
             for _kh in range(kh):
                 for _kw in range(kw):
                     weights.append(rng.uniform(low, high))
@@ -72,7 +73,7 @@ def build_model(size: int, out_dir: Path, force: bool) -> None:
         print(f"[skip] {rknn_path}")
         return
 
-    weights = generate_weights(in_ch, out_ch, size, size, kh, kw, -2.0, 2.0)
+    weights = generate_weights(in_ch, out_ch, size, size, kh, kw, 1, -2.0, 2.0)
     weight_tensor = torch.tensor(weights, dtype=torch.float32).reshape(out_ch, in_ch, kh, kw)
 
     class SimpleConv(torch.nn.Module):
@@ -114,16 +115,92 @@ def build_model(size: int, out_dir: Path, force: bool) -> None:
     print(f"[ok] {rknn_path}")
 
 
+def build_custom_model(batch: int, in_ch: int, h: int, w: int,
+                       out_ch: int, kh: int, kw: int, groups: int,
+                       model_name: str, out_dir: Path, force: bool) -> None:
+    onnx_path = out_dir / f"{model_name}.onnx"
+    rknn_path = out_dir / f"{model_name}.rknn"
+    if not force and rknn_path.exists():
+        print(f"[skip] {rknn_path}")
+        return
+
+    weights = generate_weights(in_ch, out_ch, h, w, kh, kw, groups, -2.0, 2.0)
+    in_ch_per_group = in_ch // max(1, groups)
+    weight_tensor = torch.tensor(weights, dtype=torch.float32).reshape(out_ch, in_ch_per_group, kh, kw)
+
+    class SimpleConv(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(in_channels=in_ch, out_channels=out_ch,
+                                        kernel_size=(kh, kw), groups=groups, bias=False)
+            with torch.no_grad():
+                self.conv.weight.copy_(weight_tensor)
+
+        def forward(self, x):
+            return self.conv(x)
+
+    model = SimpleConv()
+    dummy = torch.zeros(batch, in_ch, h, w, dtype=torch.float32)
+    torch.onnx.export(
+        model,
+        dummy,
+        str(onnx_path),
+        export_params=True,
+        opset_version=11,
+        do_constant_folding=False,
+        input_names=['input'],
+        output_names=['output'],
+    )
+
+    rknn = RKNN()
+    rknn.config(target_platform='rk3588')
+    ret = rknn.load_onnx(model=str(onnx_path), input_size_list=[[batch, in_ch, h, w]])
+    if ret != 0:
+        raise RuntimeError(f"load_onnx failed for {onnx_path}: {ret}")
+    ret = rknn.build(do_quantization=False, dataset=None)
+    if ret != 0:
+        raise RuntimeError(f"build failed for {onnx_path}: {ret}")
+    ret = rknn.export_rknn(str(rknn_path))
+    if ret != 0:
+        raise RuntimeError(f"export_rknn failed for {rknn_path}: {ret}")
+    rknn.release()
+    print(f"[ok] {rknn_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", type=int, default=1)
     parser.add_argument("--end", type=int, default=1)
     parser.add_argument("--out-dir", default="ops_rknn/models")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--custom", action="store_true")
+    parser.add_argument("--batch", type=int, default=1)
+    parser.add_argument("--in-ch", type=int, default=0)
+    parser.add_argument("--out-ch", type=int, default=0)
+    parser.add_argument("--height", type=int, default=0)
+    parser.add_argument("--width", type=int, default=0)
+    parser.add_argument("--k-h", type=int, default=0)
+    parser.add_argument("--k-w", type=int, default=0)
+    parser.add_argument("--groups", type=int, default=1)
+    parser.add_argument("--name", default="")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.custom:
+        if not all([args.in_ch, args.out_ch, args.height, args.width, args.k_h, args.k_w]):
+            raise SystemExit("custom model requires --in-ch --out-ch --height --width --k-h --k-w")
+        in_ch_per_group = args.in_ch // max(1, args.groups)
+        if not args.name:
+            args.name = (
+                f"conv2d_i{args.batch}{args.in_ch}{args.height}{args.width}"
+                f"_w{args.out_ch}{in_ch_per_group}{args.k_h}{args.k_w}"
+            )
+        build_custom_model(args.batch, args.in_ch, args.height, args.width,
+                           args.out_ch, args.k_h, args.k_w, args.groups,
+                           args.name, out_dir, args.force)
+        return
 
     start = max(1, args.start)
     end = max(start, args.end)

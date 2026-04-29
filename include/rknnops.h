@@ -1091,7 +1091,13 @@ void regcmd_helper(uint64_t input_dma, uint64_t weights_dma, uint64_t output_dma
          int conv_con1 = CNA_CONV_CON1_PROC_PRECISION(2) | CNA_CONV_CON1_IN_PRECISION(2) ;
          if (!( conv_batch==1 && conv_in_channels==16 && in_h==18 && in_w==18 &&
             conv_out_channels==16 && weight_in_channels==16 && conv_kernel_h==3 && conv_kernel_w==3)) {
-            conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(10) ;
+
+            int argb_in = 10;
+            if (( conv_batch==1 && conv_in_channels==4 && in_h==9 && in_w==9 &&
+               conv_out_channels==4 && weight_in_channels==4 && conv_kernel_h==1 && conv_kernel_w==1)) {
+                  argb_in = 11;
+               }
+            conv_con1 |= CNA_CONV_CON1_NONALIGN_DMA(1) | CNA_CONV_CON1_GROUP_LINE_OFF(1) | CNA_CONV_CON1_ARGB_IN(argb_in) ;
          }
          EMIT(REG_CNA_CONV_CON1, conv_con1);
          EMIT(REG_CNA_CONV_CON2, CNA_CONV_CON2_FEATURE_GRAINS(feature_grains));
