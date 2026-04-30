@@ -1,7 +1,9 @@
 # Pure C driver for RK3588 NPU
 
-⚠️ Documentations still WIP. For now u can read the code at rknnops.h or Ask DeepWiki (it has up to 1 week delay)
+⚠️ Documentations still WIP. For now u can read the code at rknnops.h 
 https://github.com/allbilly/npu/blob/d25b7e86272f4f5a259367339c2a2b9c6dd0538d/include/rknnops.h#L1085-L1347
+
+Or Ask DeepWiki
 https://deepwiki.com/allbilly/npu
 
 ✅ Tested on Official Ubuntu image Orange Pi 1.2.2 Jammy]() with Linux 6.1.99-rockchip-rk3588 OrangePi 5
