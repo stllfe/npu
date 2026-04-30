@@ -11,6 +11,10 @@ http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/service-and-su
 This repo is inspired by Panfrost opensource driver by [alyssarosenzweig](https://alyssarosenzweig.ca/blog/asahi-gpu-part-n.html)
 Panfrost is the opensource driver on Mali GPU on RK3588 and this repo aim to be same kind of contribution for the RK3588 NPU
 
+## Supported Ops
+
+https://github.com/allbilly/npu/blob/82b4c4c7f774c15adb83fde6cd86663018b1c55c/include/rknnops.h#L1087-L1138
+
 # Know issues
 
 matmul failed at
