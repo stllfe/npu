@@ -1,9 +1,10 @@
+⚠️ This C repo is going too bulky, I am rewriting in python, checks out [allbilly/rk3588](https://github.com/allbilly/rk3588)
+However, the dump/gdb script in ops_rknn is still quite useful IMO. 
+
+TLDR
+- read include/rknnops.h#L1085-L1347
+
 # Pure C driver for RK3588 NPU
-
-⚠️ Documentations still WIP. For now u can read the code at include/rknnops.h#L1085-L1347
-
-Or Ask DeepWiki
-https://deepwiki.com/allbilly/npu
 
 ✅ Tested on Official Ubuntu image Orange Pi 1.2.2 Jammy with Linux 6.1.99-rockchip-rk3588 OrangePi 5
 http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/service-and-support/Orange-pi-5.html
@@ -17,8 +18,8 @@ https://github.com/allbilly/npu/blob/82b4c4c7f774c15adb83fde6cd86663018b1c55c/in
 
 # Know issues
 
-matmul failed at
-- 424x424x424, fixed in another branch
+matmul failed 
+- 424x424x424 at single task, need split by M, fixed in [allbilly/rk3588](https://github.com/allbilly/rk3588)
 
 conv2d failed at
 - i:1,3,2041,2041 w:6,3,1,1
